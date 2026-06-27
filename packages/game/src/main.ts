@@ -1,5 +1,6 @@
 import { selectAdapter } from './telegram/selectAdapter';
 import { colors, fonts } from './brand/tokens';
+import { drawGlassPanel } from './ui/glass';
 
 /**
  * Phase 1 bootstrap. This is a deliberately minimal brand splash that proves the
@@ -45,11 +46,18 @@ function draw(): void {
   ctx.fillStyle = colors.bg;
   ctx.fillRect(0, 0, w, h);
 
-  // Brand lockup.
+  // Brand lockup on a frosted-glass plate. The wordmark in Logo2 is dark navy,
+  // so it needs a light surface to read against the dark brand background.
   if (lockupReady) {
-    const lw = Math.min(w * 0.62, 320);
+    const lw = Math.min(w * 0.5, 280);
     const lh = lw * (lockup.height / lockup.width);
-    ctx.drawImage(lockup, cx - lw / 2, h * 0.26 - lh / 2, lw, lh);
+    const pad = Math.max(18, lw * 0.09);
+    const plateW = lw + pad * 2;
+    const plateH = lh + pad * 2;
+    const plateX = cx - plateW / 2;
+    const plateY = h * 0.27 - plateH / 2;
+    drawGlassPanel(ctx, plateX, plateY, plateW, plateH, Math.min(28, plateH * 0.22));
+    ctx.drawImage(lockup, plateX + pad, plateY + pad, lw, lh);
   }
 
   ctx.textAlign = 'center';
