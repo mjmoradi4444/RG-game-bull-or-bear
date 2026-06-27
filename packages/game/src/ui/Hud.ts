@@ -1,5 +1,6 @@
 import type { Viewport } from '../engine/Viewport';
 import { colors, fonts } from '../brand/tokens';
+import { COPY } from '../brand/copy';
 import { clamp, TAU } from '../engine/math';
 import { drawGlassPanel, roundRectPath } from './glass';
 
@@ -67,7 +68,7 @@ export class Hud {
 
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
-    ctx.fillText('P&L', x, 28);
+    ctx.fillText(COPY.pnlLabel, x, 28);
 
     const positive = s.pnl >= 0;
     const col = positive ? colors.up : colors.down;
@@ -107,7 +108,7 @@ export class Hud {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
-    ctx.fillText('REBATE', rightX, 28);
+    ctx.fillText(COPY.rebateLabel, rightX, 28);
 
     this.drawJar(ctx, jar, s.tierProgress, s.jarBump);
 
@@ -132,6 +133,15 @@ export class Hud {
   private drawJar(ctx: CanvasRenderingContext2D, jar: JarRect, fill: number, bump: number): void {
     const { x, y, w, h } = jar;
     const r = Math.min(w, h) * 0.24;
+
+    // Persistent soft gold glow — grows as the jar fills.
+    ctx.save();
+    const glow = ctx.createRadialGradient(x + w / 2, y + h / 2, 2, x + w / 2, y + h / 2, w);
+    glow.addColorStop(0, `rgba(245,196,81,${0.1 + 0.14 * fill})`);
+    glow.addColorStop(1, 'rgba(245,196,81,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(x - w / 2, y - h / 4, w * 2, h * 1.5);
+    ctx.restore();
 
     // Bump glow.
     if (bump > 0.01) {

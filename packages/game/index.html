@@ -10,6 +10,15 @@
     <meta name="description" content="Rebate Rush — win or lose, the rebate pays. A RebateGain arcade game." />
     <title>Rebate Rush — RebateGain</title>
     <link rel="icon" type="image/png" href="/brand/Logo1.png" />
+    <!-- Inter — the RebateGain brand font. Falls back to system-ui if offline; the
+         canvas re-reads the font each frame, so text upgrades to Inter once loaded.
+         For production, self-hosting a woff2 subset avoids this external request. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <style>
       :root { color-scheme: dark; }
       html, body {
