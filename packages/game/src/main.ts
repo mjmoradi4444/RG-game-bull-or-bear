@@ -20,7 +20,7 @@ const audio = new Audio();
 const rng = new Rng();
 const particles = new Particles(rng, 500);
 const adapter = selectAdapter();
-const game = new Game(viewport, input, audio, particles, rng, adapter);
+const game = new Game(viewport, input, audio, particles, adapter);
 
 // Unlock WebAudio on the first user gesture (browser requirement).
 input.onFirstGesture(() => audio.resume());

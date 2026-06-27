@@ -1,227 +1,210 @@
-# Rebate Rush — Claude Code Build Spec / Master Prompt
+# Bull or Bear — RebateGain Trading Duel · Claude Code Build Spec
 
-> Paste this whole file into Claude Code as the project spec (e.g. save as `SPEC.md` at the repo root and tell Claude Code: *"Read SPEC.md fully, then propose a plan before writing any code."*). Build in the phases at the bottom — do not one-shot the whole thing.
-
----
-
-## 0. Role & non-negotiable rule
-
-You are building **Rebate Rush**, a Telegram HTML5 arcade game for **RebateGain** (a forex rebate / cashback platform — traders get a portion of their spread/commission back on every trade, win or lose).
-
-**The entire game exists to teach ONE idea, viscerally:**
-
-> **"Win or lose, the rebate pays. That's RebateGain."**
-
-Every design decision serves that lesson. If a feature doesn't reinforce it, cut it.
+> This REPLACES the Rebate Rush gameplay. Paste this whole file in as the project spec (save as `SPEC.md`), and: *"Read SPEC.md fully. We are pivoting the game. Reuse the proven foundation per §1, rewrite the gameplay layer, and propose a plan before writing code."* Build in the phases at the bottom — do not one-shot.
 
 ---
 
-## 1. Architecture decision (read before choosing a stack)
+## 0. Role & the one idea
 
-Telegram supports two delivery paths. We are building **both-ready**:
+You are building **Bull or Bear**, a 2-player Telegram trading-prediction duel for **RebateGain** (a forex rebate / cashback platform).
 
-- **Path A — Gaming Platform** (classic `/newgame` HTML5 game, native per-chat leaderboards via `setGameScore`). This is the contest target.
-- **Path B — Mini App / Web App** (full Telegram WebApp SDK, custom global leaderboard, referral, sign-up funnel). This is the growth target.
+**Core loop:** a real chart of a real asset (Gold/XAUUSD, EUR/USD, GBP/USD, USD/JPY, WTI oil, BTC, ETH) plays forward for a few seconds, then **freezes**. The player calls the next move — **BUY (up)** or **SELL (down)** — against a short timer. Then the chart reveals **what actually happened in real history**. 4 rounds. Two players face the **same** 4 charts; whoever gets more right wins.
 
-**Mandatory architectural principle:** the core game engine must be **100% platform-agnostic** (pure Canvas + TS, zero Telegram imports). All Telegram-specific code lives behind a single `TelegramAdapter` interface with two implementations (`GamesPlatformAdapter`, `MiniAppAdapter`) selected at runtime. Score submission, leaderboard fetch, share, haptics, and user identity all go through this adapter.
-
-Ship **Path A first** for the contest. Keep Path B wired but behind a flag.
+**The non-negotiable promise:** the game must be **provably fair and real** so players never suspect it's rigged. Every fairness decision in §3 exists to protect that.
 
 ---
 
-## 2. Tech stack
+## 1. Reuse vs rewrite (there is an existing repo)
 
-- **Frontend (game):** TypeScript + **Vite** + **HTML5 Canvas 2D**. No game framework unless justified — keep the bundle tiny (target < 300 KB gzipped, first interaction < 2 s on 3G; Telegram users open in an in-app webview and bounce on slow loads). Phaser is allowed only if it clearly pays for itself; default to vanilla Canvas.
-- **Backend (bot + score):** **Node.js + TypeScript + grammY**. Responsibilities: handle the `callback_query` with `game_short_name` and answer with the game URL; expose `POST /score` (verify + call `setGameScore`) and `GET /highscores` (call `getGameHighScores`). `BOT_TOKEN` stays in env, **never** in the frontend bundle.
-- **Hosting:** static frontend on Cloudflare Pages / Vercel / Netlify (HTTPS mandatory). Bot backend on Railway / Render / Fly. Both must be HTTPS.
-- **State:** no DB needed for Path A (Telegram stores high scores). For Path B add Postgres/Redis later for the global board + referral.
+The previous build (`Rebate Rush`) has a solid foundation. **Keep the foundation, replace the gameplay.**
 
----
+**REUSE as-is (do not rebuild):**
+- The **engine** (`engine/`: loop, input, renderer, audio synth, particle pool, rng, tween) — it's clean and tiny.
+- The **brand layer** (`brand/tokens.ts` — exact colors/gradient/fonts sampled from the logos) and the **frosted-glass plate** (`glass.ts`).
+- The **polished start/title screen treatment** (glass logo plate on brand-navy, Inter, ambient glow, bobbing coin). **The start screen must stay at this exact quality bar — the founder specifically liked it. Re-skin its buttons for the duel, but do not downgrade the polish.**
+- The **`TelegramAdapter`** interface + `Noop`/`GamesPlatform` adapters and `selectAdapter()`.
+- The **`bot/`** scaffold (grammY + `/score` + `/highscores` + `security.ts`) — extend it, don't restart it.
+- `copy.ts` pattern (all user-facing strings centralized + compliance-checked).
 
-## 3. Repo structure
+**REWRITE / REMOVE:**
+- The whole `game/` layer (Rebate Rush trade/scoring/lives/brokers/world). Replace with the duel modules in §2.
+- Game-over "Rebate jar vs P&L" payoff → replaced by the round reveal + match-result screens.
 
-```
-rebate-rush/
-  packages/
-    game/                  # platform-agnostic Canvas game (TS + Vite)
-      src/
-        engine/            # loop, input, renderer, audio, particles
-        game/              # entities, spawner, difficulty, scoring, state machine
-        ui/                # HUD, game-over screen, leaderboard panel
-        telegram/
-          TelegramAdapter.ts        # interface
-          GamesPlatformAdapter.ts
-          MiniAppAdapter.ts
-          NoopAdapter.ts            # local dev / browser
-        brand/             # tokens.ts (colors, fonts), assets
-        main.ts
-      index.html
-    bot/                   # grammY bot + score backend (TS)
-      src/
-        bot.ts
-        routes/score.ts
-        routes/highscores.ts
-        telegram.ts        # setGameScore / getGameHighScores wrappers
-      .env.example         # BOT_TOKEN=, GAME_SHORT_NAME=, GAME_URL=
-  README.md
-  SPEC.md                  # this file
-```
+**ADD (new):**
+- `data-pipeline/` (offline puzzle builder, §3).
+- A **match/duel layer** (§4) + deep-link challenge flow.
+- A `puzzles.json` dataset.
+
+> Keep the engine 100% Telegram-free; keep the bundle small (< 400 KB gzipped incl. an initial puzzle batch; lazy-load the rest of the dataset).
 
 ---
 
-## 4. Game design spec (the core loop)
+## 2. Game concept & round flow (exact params — all in a `config.ts`, easy to tune)
 
-**Format:** mobile-first, portrait, one-thumb. Tap-anywhere control. Endless / survival. Must also work with click + spacebar on desktop.
+One **round** = one puzzle:
 
-### 4.1 The screen
-- A **price chart scrolls right-to-left** continuously. Speed ramps over time (difficulty curve).
-- Two always-on meters, top of screen:
-  - **P&L meter (top-left):** volatile. Goes up on winning trades, **down (can go negative, flashes red)** on losing trades. This meter is **purely educational/cosmetic** — it is NOT the score and NEVER ends the game.
-  - **Rebate jar (top-right):** golden, **monotonic — only ever increases.** This is the hero element. Every trade adds to it.
+1. **Pre-roll (~1s):** "Round X / 4" + asset name shown (e.g. "GOLD · XAU/USD", "BITCOIN", "EUR/USD"). Asset is shown for flavor; **absolute date/time is hidden** (anti-lookup).
+2. **Playback (~4s):** stream ~30 lead-up candles in, eased, so it feels live. Real OHLC, real wicks. Subtle "scanning"/live feel.
+3. **Freeze:** chart freezes at the decision candle. Flash + "CALL IT". Two big buttons: **BUY ▲** (brand green) and **SELL ▼** (red). An **8s countdown ring** starts.
+4. **Lock-in:** player taps BUY or SELL → locked, "Locked ✓". **Timeout with no call = counts as a miss** (keeps pressure; never silently helps the house either way).
+5. **Reveal (~3s):** animate the **real future candles** (horizon `H`) playing out from the freeze. Resolve: price's close at `freeze + H` vs the freeze close → **up / down**. Show **✓ Correct** (green burst, point, combo flair) or **✗ Wrong** (red). Show the **verify chip** (§3.4) + the **rebate reminder** (§6).
+6. **Tally** updates. Next round.
 
-### 4.2 The action
-- Player **taps to fire a trade** at the current candle (cooldown ~0.35 s, show a small cooldown ring).
-- Each trade **instantly resolves**: next candle is green (win) or red (loss). Use slight momentum/streakiness so it feels market-like, not pure coin-flip — but outcome is **not** player-skill-determined and the player cannot "predict" it. (Honesty: we are not implying skill beats the market.)
-- **On win:** P&L up, green pop, win SFX.
-- **On loss:** P&L down, red shake, loss SFX.
-- **On EVERY trade regardless of outcome:** a rebate coin flies into the jar with a satisfying particle burst + coin SFX + haptic. ← this is the teaching moment, make it juicy.
+After 4 rounds → match result (§4). 
 
-### 4.3 Fail state (skill layer)
-Score must be earnable through skill, so add a light discipline mechanic:
-- Occasionally a candle is flagged **"HIGH SPREAD"** (visually distinct, brief warning telegraph). Trading during a high-spread candle costs **1 life**.
-- 3 lives. Lose all → game over.
-- This teaches a sliver of cost-awareness without ever implying rebates change outcomes.
-
-### 4.4 Scoring (critical brand rule)
-- **Score = total Rebate banked.** Only rebate. The leaderboard ranks who banked the most rebate — **never P&L.** (The whole point: the consistent, rankable, positive thing is the rebate.)
-- Rebate per trade = `baseRate × brokerTierMultiplier × comboMultiplier`.
-
-### 4.5 Progression & juice
-- **Broker tiers:** every N rebate coins, unlock the next broker (LiteFinance → Vantage Markets → ECMarkets → … "+20 more"). Each tier bumps `brokerTierMultiplier` and shows a broker badge toast. This naturally showcases RebateGain's 23-broker network. Frame as "23 brokers and expanding."
-- **Combo multiplier:** consecutive trades without losing a life build a combo that boosts rebate; resets on life loss.
-- **Difficulty:** scroll speed and high-spread frequency increase with time/score.
-- **Juice budget (do not skip):** screen shake on loss, coin particle bursts, number pop/tween on both meters, subtle bg parallax, snappy SFX (mute toggle), haptic feedback via the Telegram adapter on mobile. Polished feel IS the brand — RebateGain's #1 differentiator is UI/UX, so the game must feel like a premium fintech product, not a cheap flash game.
-
-### 4.6 Game-over screen (the payoff)
-Show the two numbers **side by side**, big:
-
-```
-Your P&L this run:      −$240   😬   (volatile — sometimes red)
-Your Rebate banked:    +$1,180  ✅   (you got paid every single trade)
-```
-
-Then the line:
-> **"Win or lose, the rebate pays. That's RebateGain."**
-> *Rebate doesn't change your P&L — it's paid back to you on top, every trade.*
-
-Buttons: **Play Again** · **Leaderboard** · **Share** · **Get real rebates → RebateGain** (CTA, see §7).
+**Tuning defaults (`config.ts`):** `CONTEXT_CANDLES=30`, `HORIZON_H=10`, `DECISION_SECONDS=8`, `PLAYBACK_MS=4000`, `REVEAL_MS=3000`, `ROUNDS=4`, `TIEBREAKER=true`.
 
 ---
 
-## 5. Telegram integration spec (Path A — Gaming Platform)
+## 3. THE DATA & FAIRNESS SOLUTION (the crux — get this exactly right)
 
-### 5.1 BotFather setup (document in README, do not automate token handling)
-1. `/newbot` → get bot + token.
-2. `/setinline` → enable inline mode (mandatory for games).
-3. `/newgame` → set title, description, photo, optional GIF, and the **game short name** (unique id).
+Fairness rests on **four pillars**. Implement all four.
 
-### 5.2 Runtime flow (implement exactly this)
-1. Bot sends the game via `sendGame` (and supports inline mode for sharing). The message shows a **Play** button.
-2. User taps Play → bot receives a `callback_query` containing `game_short_name`.
-3. Bot answers the callback with the **game URL** (`answerCallbackQuery({ url })`). Append the Telegram-provided context to the URL so the frontend can echo it back later (user/chat/message identifiers or inline_message_id, plus an HMAC you sign).
-4. Frontend loads `https://telegram.org/js/games.js` → `TelegramGameProxy` becomes available. Read launch params via `TelegramGameProxy.initParams` and/or the URL fragment.
-5. On game over with a new personal best, frontend `POST`s the score + the signed context to `bot /score`.
-6. Backend **verifies the HMAC/context**, then calls **`setGameScore`** (with `user_id` + `chat_id` + `message_id`, or `inline_message_id`). The bot — not the browser — holds the token.
-7. Leaderboard panel: frontend `GET`s `/highscores`; backend calls **`getGameHighScores`** and returns the list to render in-game.
+### 3.1 Real historical data, outcome fixed by history
+Each puzzle is a real slice of a real asset's history: a context window, a freeze point, and the **actual** future. The outcome is whatever truly happened — the house cannot influence it. **Never synthesize or fudge candles.**
 
-### 5.3 Security (hard requirements)
-- `BOT_TOKEN` only on the server. Never shipped to the client.
-- Every `/score` call must carry a server-signed token tying it to a real launch context; reject unsigned or replayed submissions. Rate-limit per user.
-- Treat any score from the client as untrusted; clamp to sane bounds and prefer server-side sanity checks (max rebate per second given the cooldown).
+### 3.2 Pre-baked, curated dataset (no live API at runtime)
+Build the dataset **offline**, once, in `data-pipeline/` (Node + TS scripts). Do NOT call market APIs at game time (slow, rate-limited, fragile, and would break PvP symmetry).
 
-### 5.4 Adapter contract (so Path B drops in later)
+**Free, real sources (use these):**
+- **Crypto (BTC, ETH):** **Binance klines** REST (`/api/v3/klines`, free, no key, deep history) — the zero-friction anchor. (Kraken's free downloadable full-history OHLCVT CSVs are a fine alternative.)
+- **FX majors + Gold (XAUUSD) + Oil (WTI/Brent):** **Dukascopy** historical export or **Forexite** M1 dumps (free, high quality, FX + metals + crypto, history back ~20y), or **Alpha Vantage** free API key (FX intraday + commodities) if you prefer an API to file dumps.
+
+**Pipeline steps (`data-pipeline/src/build.ts`):**
+1. **Fetch** raw OHLC per asset/timeframe (timeframes: 5m, 15m, 1h — tag each puzzle).
+2. **Slice** into clips: `[ ...CONTEXT_CANDLES, freezeCandle, ...HORIZON_H future ]` at many non-overlapping (or lightly strided) offsets.
+3. **Label** `outcome = close[freeze + H] > close[freeze] ? 'up' : 'down'`.
+4. **Curate (this is what makes it fair AND fun):**
+   - **Balance ~50/50 up/down** overall and per asset → a coin-flipper averages ~50%, so any score above that is provably *skill*, and there's no exploitable directional bias.
+   - **Drop degenerate clips:** require `|Δ| ≥ noiseThreshold` (e.g. ≥ 0.15% or ≥ k×ATR) so outcomes are unambiguous — no ties, no "basically flat" feel-cheated cases.
+   - **Variety:** mix assets, timeframes, and regimes (trending vs ranging). Optional `difficulty` tag from trend-strength/volatility.
+   - **Dedupe** heavily-overlapping windows.
+5. **Obfuscate for play:** store the absolute real date only in a `verify` field (revealed AFTER the call, never during). Render relative time on axes during play.
+6. **Output** `puzzles.json` — target **≥ 500 clips** (more = less repetition). Shape:
 ```ts
-interface TelegramAdapter {
-  ready(): Promise<void>;
-  getUser(): { id?: string; name?: string } | null;
-  submitScore(score: number): Promise<void>;     // Games: POST→setGameScore; MiniApp: backend global board
-  getLeaderboard(): Promise<LeaderEntry[]>;
-  share(): void;                                  // inline share / WebApp share
-  haptic(kind: 'success' | 'warning' | 'impact'): void;
-  openLink(url: string): void;                    // sign-up CTA
-}
+type Puzzle = {
+  id: string;
+  asset: string;           // "XAU/USD"
+  timeframe: '5m'|'15m'|'1h';
+  candles: Candle[];       // context (length CONTEXT_CANDLES)
+  future: Candle[];        // length HORIZON_H (shown only on reveal)
+  freezeClose: number;
+  outcome: 'up' | 'down';
+  difficulty?: 'easy'|'med'|'hard';
+  verify: { realDateUtc: string; source: 'binance'|'dukascopy'|'forexite'|'alphavantage' };
+};
 ```
-For **Path B (Mini App)** later: use `window.Telegram.WebApp` (`initData` verified server-side, `HapticFeedback`, `openTelegramLink`, `CloudStorage`, `MainButton`), and a custom backend global leaderboard + referral via start params.
+
+### 3.3 Skill horizon, not a coin flip
+Predicting the literal next tick is ~50/50 (random walk) and feels unfair. Predicting direction **`H` candles out**, with `CONTEXT_CANDLES` of visible trend/structure, lets a trader read momentum and beat chance. This is what makes it feel *skillful and fair* rather than a slot machine. Keep enough context on screen to actually reason from.
+
+### 3.4 Verifiability (kills the "rigged" suspicion outright)
+On every reveal, show a **verify chip**: `Real data · XAU/USD · Mar 2026 · via Dukascopy`. Tapping it shows the exact real timestamp + source (and, where feasible, deep-links to that asset/date on a public chart). This is the single most important trust feature — make it visible, not buried.
+
+### 3.5 Anti-lookup (so recognition can't break fairness)
+Historical data is fixed, so in theory a player could recognize the moment and look it up. Mitigate: hide absolute dates during play (3.2.5), keep the 8s timer (no time to search), and rely on the large pool (one of 500+ windows). For a casual viral duel this is sufficient; don't over-engineer it.
 
 ---
 
-## 6. Brand & visual direction
+## 4. PvP / match structure
 
-Match **RebateGain** brand: clean, modern, premium **fintech**, dark theme. UI/UX polish is the brand's core differentiator — hold a high bar.
+### 4.1 Match = a seed → the same 4 puzzles for both players
+A **match seed** deterministically selects `ROUNDS` puzzle IDs (balanced + varied). **Both players get the identical set, same order** → the duel is decided purely by who reads charts better. Symmetric and fair.
 
-- **Typography:** Inter (RebateGain brand font).
-- **Brand assets provided:** `Logo1.png` = the standalone **square icon mark** (use as the in-app brand mark, favicon, and square game icon). `Logo2.png` = the **horizontal lockup** with the "Rebate Gain" wordmark (use on the loading screen and the game-over header).
-- **Brand tokens — sampled directly from the official logos. Use these exact values in `brand/tokens.ts`:**
-  - **Brand dark / background base** `#101830` (the logo navy). Background `#101830`, surface `#171F3A`, border `#283154`.
-  - **Brand blue gradient** `#0A78FF → #2A4BFF` (left→right). Primary brand accent — UI chrome, primary buttons, the brand mark, "brand moment" highlights.
-  - **Text** `#FFFFFF`, muted `#8A94A6`.
-  - **Functional trading colors** (universal convention, NOT brand colors): **win/up green** `#16C784`, **loss/down red** `#EA3943`. Used ONLY for the P&L meter and hazards.
-  - **Rebate gold** `#F5C451` — the hero color for the rebate jar and coins. **Keep it gold on purpose:** it must stay distinct from the brand blue (so it pops) and from the win-green (so the lesson "rebate is NOT the same as winning" stays visually obvious). Do not "correct" rebate to brand blue.
-- Coins = gold, jar fills with a glow as it grows. The rebate jar is the most satisfying thing on screen.
-- Respect Telegram theme params (`themeParams` / safe-area insets) so it sits cleanly in the webview.
+### 4.2 v1 = async "challenge a friend" (Telegram-native, viral)
+1. Player A picks **Challenge a friend** → plays 4 rounds → gets a score.
+2. App produces a **Telegram share message** with a deep link carrying the match seed (`?startapp=duel_<seed>` for Mini App, or game URL param for the Games platform), e.g. *"I scored 3/4 on the RebateGain Trading Duel 📈 Can you beat me? 👇"*.
+3. Player B opens it → plays **the same 4** → results compared → **winner announced** (in-app + a result message back to the chat). **Rematch** button (new seed).
 
----
+Async needs no realtime infra, fits Telegram's share-to-chat model, and *is* the virality engine. 
 
-## 7. Sign-up funnel & CTA
+### 4.3 Tiebreak
+Equal correct counts → **sudden-death Round 5** (one more shared puzzle). Still tied → faster average decision time wins.
 
-- Game-over CTA **"Get real rebates → RebateGain"** opens the RebateGain sign-up URL via `adapter.openLink()`, with a tagged deep link: `?utm_source=telegram&utm_medium=game&utm_campaign=rebate_rush` (+ broker tier reached, if useful).
-- Make the bridge explicit and honest: the coins in the game are a **score**; real rebates require signing up on RebateGain and connecting a broker.
+### 4.4 Modes on the start screen
+- **Challenge a friend** (async PvP, the headline).
+- **Quick play / Practice** (solo: play 4, see accuracy, climb a global accuracy leaderboard) — gives solo users an entry and feeds them toward duels.
+- **Leaderboard** (duel wins + accuracy).
+- *(Flagged for later: real-time live duel — websocket lobby, presence, simultaneous play. Architect the match layer so it can drop in; don't build it now.)*
 
----
-
-## 8. Compliance / no-go (RebateGain rules — enforce in all copy)
-
-- Never imply rebates change trade outcomes, P&L, or broker behavior. (The game keeps P&L and Rebate strictly separate — preserve that.)
-- No "get rich", "guaranteed income", "passive income machine", or overnight-success framing anywhere.
-- In-game currency is clearly a **game score**, not real money or a payout promise.
-- Don't promise specific rebate rates. Frame the broker network as "23 brokers and expanding."
-- Keep it accurate: rebates are paid **on top of** P&L, win or lose — that's the only claim the game makes, and it's true.
+### 4.5 Backend (extend `bot/`)
+Add match endpoints: create match (seed → puzzle IDs), submit a player's results, resolve winner when both have played, leaderboard. Store minimal match state (seed, perPlayer results, winner). Treat all client-submitted results as untrusted: the server holds the puzzle outcomes and **scores server-side** from the submitted calls — never trust a client-sent "correct count."
 
 ---
 
-## 9. Performance & platform requirements
-
-- Bundle < 300 KB gzipped; lazy-load audio. First playable < 2 s on a throttled connection.
-- 60 fps target on mid-range Android; degrade particles gracefully on low-end.
-- Fully responsive portrait; handle notches/safe areas; works in Telegram webview on iOS + Android + Desktop.
-- Pointer + touch + keyboard input. Mute + pause. Visibility change pauses the game.
+## 5. Scoring
+- **1 point per correct call.** Match winner = more points over the shared set. (Keep PvP scoring pure correct-count — no speed/combo weighting — so it's transparently fair.)
+- **Solo leaderboard:** accuracy %, with a small combo flair for consecutive correct calls (cosmetic + solo-board only; never affects a duel result).
 
 ---
 
-## 10. Definition of Done (acceptance checklist)
+## 6. Brand thread, funnel & start screen
 
-- [ ] Core loop playable in a plain browser via `NoopAdapter` (no Telegram needed for dev).
-- [ ] Dual-meter HUD: P&L volatile (can go red), Rebate jar monotonic gold.
-- [ ] Every trade adds rebate regardless of win/loss, with juice + haptic hook.
-- [ ] 3-life high-spread fail mechanic; difficulty ramps.
-- [ ] Broker-tier progression showing real RebateGain broker names.
-- [ ] Game-over screen with side-by-side P&L vs Rebate + the brand line + CTA.
-- [ ] Score = total rebate; leaderboard ranks rebate only.
-- [ ] `TelegramAdapter` with Games + MiniApp + Noop implementations; runtime selection.
-- [ ] grammY bot: callback→URL, `/score`→`setGameScore`, `/highscores`→`getGameHighScores`, token server-side only, signed/verified submissions.
-- [ ] README: BotFather steps, env vars, deploy steps for frontend + bot.
-- [ ] All copy passes the §8 compliance list.
+This game stays **strongly RebateGain** (that's why the concept landed):
+- **Real assets RebateGain traders trade** (XAU/USD, EUR/USD, GBP/USD, USD/JPY, WTI, BTC, ETH).
+- **Reveal reminder (the rebate hook, kept light):** on each reveal — *"On RebateGain, every trade pays you a rebate — win or lose."* This connects the skill game to the rebate value prop without making it the core mechanic.
+- **Funnel:** match-result screen has the primary CTA **"Trade for real & earn rebates → RebateGain"** → `rebategain.com/signup?utm_source=telegram&utm_medium=game&utm_campaign=bull_or_bear` via `adapter.openLink()`. Plus **Rematch** and **Share**.
+- **Start screen:** reuse the existing polished title treatment (glass plate + logo + ambient glow + Inter) — re-label for the duel modes (§4.4). Keep the white/inverted lockup for the dark surface (the fix already flagged). Hold the same premium-fintech bar.
+- **Brand tokens:** unchanged — navy `#101830` bg, blue gradient `#0A78FF → #2A4BFF`, white text, green `#16C784` (BUY/up), red `#EA3943` (SELL/down).
 
 ---
 
-## 11. How to drive Claude Code (phased — don't one-shot)
+## 7. Tech stack & repo structure (extend the existing monorepo)
+```
+rebate-rush/                 # keep folder name or rename to bull-or-bear
+  packages/
+    game/
+      src/
+        engine/              # REUSE
+        brand/               # REUSE (tokens, glass, copy)
+        ui/                  # title (REUSE+reskin) · round(playback/freeze/reveal) · matchResult · leaderboard · verifyChip
+        game/                # NEW: Round.ts · Match.ts · Puzzle.ts · scoring.ts · config.ts
+        data/                # puzzles.json (initial batch bundled; rest lazy-loaded)
+        telegram/            # REUSE adapter; ADD deep-link/match parsing
+        main.ts
+    bot/                     # REUSE+extend: matches, results, leaderboard
+    data-pipeline/           # NEW offline: fetch · slice · label · curate · emit puzzles.json
+  README.md   SPEC.md
+```
+Frontend: TS + Vite + Canvas2D (no new framework). Backend: grammY + TS. Hosting: static frontend (Cloudflare Pages/Vercel) + bot backend (Railway/Render), both HTTPS.
 
-1. **Plan:** "Read SPEC.md. Propose folder structure + the `TelegramAdapter` interface + a build plan. No code yet."
-2. **Engine:** game loop, input, renderer, audio, particles + a grey-box playable build with `NoopAdapter`.
-3. **Gameplay:** trades, dual meters, rebate scoring, high-spread lives, combo, difficulty, broker tiers.
-4. **Juice & brand:** tokens, polish, game-over screen, CTA.
-5. **Telegram (Path A):** grammY bot + `GamesPlatformAdapter` + score/leaderboard + README/BotFather.
-6. **Hardening:** security on `/score`, perf budget, responsive/webview/safe-area pass.
-7. **(Later) Path B:** `MiniAppAdapter`, global board, referral.
+---
 
-Commit per phase. Keep the engine free of any Telegram import — that separation is the whole point.
+## 8. Telegram integration
+- Path A (Games platform) for the contest **and** Path B (Mini App) wired behind a flag — Mini App is the better home for deep-link challenges (`start_param`/`startapp`) and is recommended as the primary for the async duel; keep Games-platform score submission working too. All platform calls go through `TelegramAdapter`.
+- Reuse the grammY `/score`+`/highscores` flow; add the match endpoints (§4.5). `BOT_TOKEN` server-side only.
+- **Security note for the README (do not print the token in replies):** the bot token for `@SpreadShrinker_bot` was pasted into a chat transcript — **regenerate it via BotFather (`/token`) before production** and keep it only in `bot/.env` (git-ignored).
+
+---
+
+## 9. Compliance / disclaimers (RebateGain rules — enforce in `copy.ts`)
+- **"This is a game for entertainment, not trading advice or signals. Past performance does not predict future results."** Show this on the title screen and/or first reveal. Critical: a direction-calling game on real charts must NOT read as financial advice or a signal service.
+- No "get rich", "guaranteed", "passive income", or "we'll teach you to beat the market".
+- In-game points/score are clearly **not money** and not a rebate payout.
+- Don't state broker counts or specific rebate rates; keep the network framing open-ended.
+- The only product claim the rebate reminder makes — rebates are paid on every trade, win or lose — is true; keep it to that.
+
+---
+
+## 10. Definition of Done
+- [ ] `data-pipeline` produces a balanced (~50/50), de-duped, variety-tagged `puzzles.json` (≥500) from real free sources, with `verify` metadata.
+- [ ] Round loop: playback → freeze → 8s call (BUY/SELL) → real-future reveal → ✓/✗, with the verify chip + rebate reminder.
+- [ ] Outcome scored from real data; server-side scoring (client calls are untrusted).
+- [ ] 4-round match; same 4 puzzles for both players via match seed; sudden-death tiebreak.
+- [ ] Async challenge-a-friend deep-link flow end-to-end (A plays → share → B plays same set → winner). Rematch + Share.
+- [ ] Start screen at the existing polish bar, re-skinned for duel modes; solo Practice + leaderboard.
+- [ ] All copy passes §9 (incl. the not-financial-advice disclaimer).
+- [ ] Reuses engine/brand/glass/adapter/bot; bundle < 400 KB gzipped; 60 fps.
+
+---
+
+## 11. Phased build plan (commit per phase, check in after each)
+1. **Pivot scaffold:** keep engine/brand/glass/adapter/bot; gut Rebate Rush `game/`; add `config.ts`, `Puzzle.ts` types, `data/` stub. Title screen reskinned to duel modes.
+2. **Data pipeline:** `data-pipeline` — fetch (Binance + one FX/gold/oil source) → slice → label → curate/balance → emit a real `puzzles.json`. Verify the balance + no-degenerate-clips stats.
+3. **Round engine (solo):** playback → freeze → call → real reveal → ✓/✗ + verify chip; fully playable solo over 4 rounds in the browser via Noop.
+4. **Juice & brand:** reveal flair, combo, rebate reminder, result screen + CTA, disclaimers, leaderboard panel. ← natural founder-demo checkpoint: a polished solo game.
+5. **Match layer + async PvP:** match seed → shared puzzles; challenge deep-link; winner resolution; rematch; server-side scoring; leaderboard.
+6. **Telegram + hardening:** Mini App deep-link (`startapp`) primary + Games-platform score; bot match endpoints; token regen + security; perf/safe-area/webview pass. README (BotFather, env, deploy).
+7. **(Later, flagged):** real-time live duel.
+
+Keep the engine Telegram-free. Score on the server. Never fake a candle. Show the verify chip.

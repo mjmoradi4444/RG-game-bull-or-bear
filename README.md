@@ -1,26 +1,36 @@
-# Rebate Rush
+# Bull or Bear — RebateGain Trading Duel
 
-A Telegram HTML5 arcade game for **RebateGain**. One lesson, made visceral:
+A 2-player Telegram trading-prediction duel for **RebateGain**. A real chart of a
+real asset plays, **freezes**, and you call the next move — **BUY ▲ / SELL ▼** — on
+an 8-second timer. Then the **real future** reveals what actually happened in
+history. 4 shared rounds per match; whoever reads the charts better wins.
 
-> **Win or lose, the rebate pays. That's RebateGain.**
+> The non-negotiable: **provably fair and real**. Outcomes come from real historical
+> data, never synthesized, and every reveal shows a **verify chip** (real date +
+> source). See `SPEC.md` §3.
 
-A price line ticks up and down. Every "trade" you fire drops a gold **rebate coin**
-into your jar — whether the candle turns green or red. Your **P&L** swings and can go
-negative; your **rebate jar only ever rises**. Score = total rebate banked, and the
-leaderboard ranks rebate, never P&L.
+> Pivoted from the earlier *Rebate Rush* build — the engine, brand layer, frosted
+> glass, title treatment, and `TelegramAdapter` are reused; the gameplay is new.
 
 ## Monorepo layout
 
 ```
 packages/
-  game/   platform-agnostic Canvas2D game (TypeScript + Vite) — zero Telegram imports
-  bot/    grammY bot + score backend (added in Phase 5)
+  game/            platform-agnostic Canvas2D game (TypeScript + Vite) — zero Telegram imports
+    src/
+      engine/      REUSED: loop, input, viewport, audio synth, particles, rng, math
+      brand/       REUSED: tokens.ts, copy.ts (rewritten for the duel)
+      ui/          glass, Button, text (reused) · Title (reskinned) · round/result (Phase 3+)
+      game/        NEW: config.ts, Puzzle.ts, types.ts · Round/Match (Phase 3+)
+      data/        puzzles.json (built offline; initial batch bundled, rest lazy-loaded)
+      telegram/    REUSED adapter + Noop; Games/MiniApp + deep-link parsing (Phase 6)
+  bot/             grammY bot + score/match backend (Phase 5/6)
+  data-pipeline/   NEW offline: fetch → slice → label → curate → emit puzzles.json (Phase 2)
 ```
 
-Every Telegram-specific call lives behind a single `TelegramAdapter` interface
-(`packages/game/src/telegram/`), with Games-platform (Path A), Mini App (Path B),
-and Noop (dev) implementations selected at runtime by `selectAdapter()`. The engine
-stays 100% Telegram-free — that separation is the whole architectural point.
+Every Telegram-specific call lives behind a single `TelegramAdapter`
+(`packages/game/src/telegram/`), selected at runtime. The engine stays 100%
+Telegram-free.
 
 ## Develop
 
@@ -28,21 +38,25 @@ stays 100% Telegram-free — that separation is the whole architectural point.
 npm install
 npm run dev        # http://localhost:5173 — plays in any browser via NoopAdapter
 npm run build      # type-check + production build
-npm run typecheck  # type-check only
 ```
 
-## Brand
+## Data & fairness
 
-Colors, gradients, and fonts are sampled from the official RebateGain logos and
-live in `packages/game/src/brand/tokens.ts` (the single source of truth). Gold is
-the rebate, blue is the brand, green/red are trading-only — never mixed.
+The puzzle dataset is built **offline** by `data-pipeline/` from **real, free**
+sources (Binance for crypto; Dukascopy / Alpha Vantage for FX, Gold, Oil) — never a
+live API at game time. Curation balances outcomes ~50/50, drops degenerate clips,
+mixes assets/timeframes, and dedupes, so a coin-flipper averages ~50% and any higher
+score is provably skill. The real date is stored only in a `verify` field, shown
+after the call. **Never fake a candle.**
 
-## Build status (phased — see `SPEC.md` §11)
+## Status — phased build (see `SPEC.md` §11)
 
-- [x] **Phase 1 — scaffold:** monorepo, Vite, brand tokens, `TelegramAdapter` + `NoopAdapter`, bootable brand splash
-- [ ] Phase 2 — engine: loop, input, renderer, audio, particles (grey-box playable)
-- [ ] Phase 3 — gameplay: trades, dual meters, rebate scoring, 3-life high-spread mechanic, combo, difficulty, broker tiers
-- [ ] Phase 4 — juice & brand: polish, game-over screen, CTA
-- [ ] Phase 5 — Telegram Path A: grammY bot, `setGameScore` / `getGameHighScores`, signed score submission, BotFather guide
-- [ ] Phase 6 — hardening: security, perf budget, responsive / safe-area
-- [ ] Phase 7 — Path B Mini App: global leaderboard, referral
+- [x] **Phase 1 — pivot scaffold:** gutted Rebate Rush gameplay; reskinned title to the
+  three duel modes; added `config.ts` / `Puzzle.ts` / `data/`; kept engine, brand,
+  glass, adapter. Bootable, on the same polish bar.
+- [ ] Phase 2 — data pipeline: real, balanced `puzzles.json` (≥500) incl. XAU/USD + EUR/USD
+- [ ] Phase 3 — round engine (solo): playback → freeze → 8s call → real reveal → ✓/✗ + verify chip
+- [ ] Phase 4 — juice & brand: reveal flair, combo, rebate reminder, result + CTA, leaderboard
+- [ ] Phase 5 — match layer + async PvP: seed → shared 4, challenge deep-link, server-side scoring
+- [ ] Phase 6 — Telegram + hardening: Mini App `startapp` + Games score, bot endpoints, security, README
+- [ ] Phase 7 — *(later)* real-time live duel

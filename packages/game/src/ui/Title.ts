@@ -1,0 +1,120 @@
+import type { Viewport } from '../engine/Viewport';
+import { colors, fonts } from '../brand/tokens';
+import { COPY } from '../brand/copy';
+import { drawGlassPanel } from './glass';
+import { type Button, drawButton } from './Button';
+import { wrapText } from './text';
+
+/**
+ * The title / mode-select screen.
+ *
+ * Reuses the founder-approved treatment (glass logo plate on brand-navy, Inter,
+ * ambient glow from the Game background) — re-skinned for the duel: three mode
+ * buttons and a BUY/SELL motif in place of the old rebate coin. The polish bar is
+ * held exactly; only the labels and the motif changed (SPEC §6).
+ */
+export class Title {
+  private readonly lockup = new Image();
+  private ready = false;
+
+  constructor() {
+    this.lockup.onload = () => {
+      this.ready = true;
+    };
+    this.lockup.src = '/brand/Logo2.png';
+  }
+
+  /** Mode buttons — shared by render and the tap hit-test. */
+  buttons(vp: Viewport): Button[] {
+    const bw = Math.min(vp.w * 0.82, 340);
+    const bx = vp.w / 2 - bw / 2;
+    const bh = 54;
+    const gap = 12;
+    let y = vp.h * 0.58;
+    const out: Button[] = [];
+    const add = (id: string, label: string, kind: Button['kind']): void => {
+      out.push({ id, x: bx, y, w: bw, h: bh, label, kind });
+      y += bh + gap;
+    };
+    add('challenge', COPY.challenge, 'primary');
+    add('practice', COPY.practice, 'gold');
+    add('leaderboard', COPY.leaderboard, 'ghost');
+    return out;
+  }
+
+  render(ctx: CanvasRenderingContext2D, vp: Viewport, pulse: number): void {
+    const { w, h } = vp;
+    const cx = w / 2;
+
+    if (this.ready) {
+      const lw = Math.min(w * 0.5, 280);
+      const lh = lw * (this.lockup.height / this.lockup.width);
+      const pad = Math.max(14, lw * 0.085);
+      const pw = lw + pad * 2;
+      const ph = lh + pad * 2;
+      const px = cx - pw / 2;
+      const py = h * 0.14;
+      drawGlassPanel(ctx, px, py, pw, ph, Math.min(26, ph * 0.22));
+      ctx.drawImage(this.lockup, px + pad, py + pad, lw, lh);
+    }
+
+    this.drawMotif(ctx, cx, h * 0.36, Math.min(w * 0.05, 20), pulse);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.11, 46)}px ${fonts.family}`;
+    ctx.fillText(COPY.title, cx, h * 0.48);
+
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.medium} ${Math.min(w * 0.042, 17)}px ${fonts.family}`;
+    ctx.fillText(COPY.tagline, cx, h * 0.48 + 30);
+
+    for (const b of this.buttons(vp)) drawButton(ctx, b);
+
+    // Compliance disclaimer (SPEC §9) — visible on the title, not buried.
+    ctx.fillStyle = 'rgba(138,148,166,0.8)';
+    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+    const lines = wrapText(ctx, COPY.disclaimer, Math.min(w * 0.84, 360));
+    lines.forEach((ln, i) => ctx.fillText(ln, cx, h * 0.93 + i * 14));
+  }
+
+  private drawMotif(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    pulse: number,
+  ): void {
+    const bob = Math.sin(pulse * 2) * 5;
+    this.triangle(ctx, cx - r * 1.7, cy + bob, r, true, colors.up);
+    this.triangle(ctx, cx + r * 1.7, cy - bob, r, false, colors.down);
+  }
+
+  private triangle(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    up: boolean,
+    color: string,
+  ): void {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (up) {
+      ctx.moveTo(cx, cy - r);
+      ctx.lineTo(cx + r * 0.9, cy + r * 0.7);
+      ctx.lineTo(cx - r * 0.9, cy + r * 0.7);
+    } else {
+      ctx.moveTo(cx, cy + r);
+      ctx.lineTo(cx + r * 0.9, cy - r * 0.7);
+      ctx.lineTo(cx - r * 0.9, cy - r * 0.7);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
