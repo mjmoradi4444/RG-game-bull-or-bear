@@ -16,6 +16,8 @@ export default defineConfig({
   },
   server: {
     host: true,
-    port: 5173,
+    // Honor the harness/host-assigned port (PORT env) so the dev server doesn't
+    // collide on a fixed port; fall back to Vite's default for plain local dev.
+    port: process.env.PORT ? Number(process.env.PORT) : 5173,
   },
 });
