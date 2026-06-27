@@ -8,10 +8,9 @@ import { Game } from './game/Game';
 import { selectAdapter } from './telegram/selectAdapter';
 
 /**
- * Phase 2 bootstrap: build the engine pieces, wire them into the Game, and run a
- * fixed-timestep loop. The platform-agnostic engine never touches Telegram — the
- * adapter (Noop in dev) is selected here and used for scores/leaderboard in later
- * phases.
+ * Bootstrap: build the engine pieces + the runtime Telegram adapter (Noop in dev),
+ * wire them into the Game, and run a fixed-timestep loop. The engine never touches
+ * Telegram — only the adapter does.
  */
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 
@@ -19,8 +18,9 @@ const viewport = new Viewport(canvas);
 const input = new Input(canvas);
 const audio = new Audio();
 const rng = new Rng();
-const particles = new Particles(rng, 400);
-const game = new Game(viewport, input, audio, particles, rng);
+const particles = new Particles(rng, 500);
+const adapter = selectAdapter();
+const game = new Game(viewport, input, audio, particles, rng, adapter);
 
 // Unlock WebAudio on the first user gesture (browser requirement).
 input.onFirstGesture(() => audio.resume());
@@ -31,13 +31,16 @@ const loop = new Loop(
   (alpha) => game.render(alpha),
 );
 
-// Pause the simulation when the tab is hidden (saves battery, avoids dt spikes).
 document.addEventListener('visibilitychange', () => {
   loop.setPaused(document.hidden);
 });
 
+// Dev-only inspection handle (stripped from production builds by Vite).
+if (import.meta.env.DEV) {
+  (window as unknown as { __rr: unknown }).__rr = { game, viewport };
+}
+
 async function boot(): Promise<void> {
-  const adapter = selectAdapter();
   await adapter.ready();
   loop.start();
 }
