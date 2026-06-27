@@ -1,0 +1,20 @@
+{
+  "name": "@rebate-rush/data-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline builder for Bull or Bear puzzles.json — real OHLC from Binance + Dukascopy, curated for fairness.",
+  "scripts": {
+    "build:data": "tsx src/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "dukascopy-node": "^1.46.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.0"
+  }
+}
