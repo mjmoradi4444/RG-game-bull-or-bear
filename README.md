@@ -57,7 +57,10 @@ after the call. **Never fake a candle.**
 - [x] **Phase 2 — data pipeline:** `data-pipeline/` builds a real, exactly-50/50,
   de-duped `puzzles.json` (576, incl. XAU/USD + EUR/USD) from Binance + Dukascopy,
   with `verify` metadata. Run with `npm run build:data -w @rebate-rush/data-pipeline`.
-- [ ] Phase 3 — round engine (solo): playback → freeze → 8s call → real reveal → ✓/✗ + verify chip
+- [x] **Phase 3 — round engine (solo):** fully playable 4-round solo flow via
+  `NoopAdapter` — pre-roll → candlestick playback → freeze + 8s BUY/SELL call → real
+  future reveal → ✓/✗ with the verify chip + rebate reminder → result. New: `Chart`,
+  `RoundView`, `VerifyChip`, `Round`, `Match`, `PuzzleBank`, `scoring`.
 - [ ] Phase 4 — juice & brand: reveal flair, combo, rebate reminder, result + CTA, leaderboard
 - [ ] Phase 5 — match layer + async PvP: seed → shared 4, challenge deep-link, server-side scoring
 - [ ] Phase 6 — Telegram + hardening: Mini App `startapp` + Games score, bot endpoints, security, README

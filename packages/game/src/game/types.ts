@@ -1,5 +1,5 @@
-/** Top-level screens of the duel. The round/result screens fill in over Phases 3–5. */
-export type Screen = 'title' | 'soon' | 'leaderboard';
+/** Top-level screens of the duel. */
+export type Screen = 'title' | 'round' | 'result' | 'leaderboard';
 
 /** Which mode the player chose from the title. */
 export type Mode = 'practice' | 'challenge';

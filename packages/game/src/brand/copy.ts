@@ -21,20 +21,25 @@ export const COPY = {
   // Round flow
   roundOf: (n: number, total: number): string => `Round ${n} / ${total}`,
   callIt: 'CALL IT',
+  callHint: 'Up or down next?',
   buy: 'BUY',
   sell: 'SELL',
   locked: 'Locked',
   correct: 'Correct',
   wrong: 'Wrong',
   noCall: 'No call',
+  nextRound: 'Next round',
+  seeResult: 'See result',
 
   // Reveal — the rebate hook, kept light (SPEC §6)
   rebateReminder: 'On RebateGain, every trade pays you a rebate — win or lose.',
   verifyLabel: 'Real data',
 
   // Result / funnel
-  matchResult: 'Match result',
+  matchResult: 'Round complete',
   youScored: (correct: number, total: number): string => `You called ${correct} of ${total}`,
+  accuracyLabel: 'accuracy',
+  playAgain: 'Play Again',
   cta: 'Trade for real & earn rebates → RebateGain',
   rematch: 'Rematch',
   share: 'Share',
@@ -44,11 +49,29 @@ export const COPY = {
   disclaimer:
     'A game for entertainment — not trading advice or signals. Past performance does not predict future results.',
   pointsDisclaimer: 'Points are a game score, not money or a rebate payout.',
-
-  // Scaffold placeholder (removed once the round engine lands)
-  soonTitle: 'Coming next',
-  soonBody: (mode: string): string => `${mode} — the round engine lands in Phase 3.`,
 } as const;
+
+/** Friendly, brand-relevant display name for an asset (SPEC §2 pre-roll examples). */
+const ASSET_LABELS: Record<string, string> = {
+  'XAU/USD': 'GOLD · XAU/USD',
+  WTI: 'OIL · WTI',
+  BTC: 'BITCOIN',
+  ETH: 'ETHEREUM',
+  SOL: 'SOLANA',
+};
+
+export function assetLabel(asset: string): string {
+  return ASSET_LABELS[asset] ?? asset;
+}
+
+/** Human label for a data source, shown in the verify chip (SPEC §3.4). */
+export function sourceLabel(source: string): string {
+  if (source === 'dukascopy') return 'Dukascopy';
+  if (source === 'binance') return 'Binance';
+  if (source === 'alphavantage') return 'Alpha Vantage';
+  if (source === 'forexite') return 'Forexite';
+  return source;
+}
 
 /** Sign-up funnel target (SPEC §6) — tagged for this game's campaign. */
 export const SIGNUP_URL =

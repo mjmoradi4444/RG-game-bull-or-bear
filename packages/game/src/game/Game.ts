@@ -2,9 +2,15 @@ import type { Viewport } from '../engine/Viewport';
 import type { Input } from '../engine/Input';
 import type { Audio } from '../engine/Audio';
 import type { Particles } from '../engine/Particles';
+import type { Rng } from '../engine/Rng';
 import type { LeaderEntry, TelegramAdapter } from '../telegram/TelegramAdapter';
 import type { Mode, Screen } from './types';
+import { CONFIG } from './config';
+import { PuzzleBank } from './PuzzleBank';
+import { Match } from './Match';
+import { accuracyPct } from './scoring';
 import { Title } from '../ui/Title';
+import { RoundView } from '../ui/RoundView';
 import { type Button, drawButton, hitButton } from '../ui/Button';
 import { roundRectPath } from '../ui/glass';
 import { colors, fonts } from '../brand/tokens';
@@ -12,18 +18,18 @@ import { COPY } from '../brand/copy';
 import { wrapText } from '../ui/text';
 
 /**
- * Pivot scaffold orchestrator (Phase 1).
- *
- * Keeps the same constructor signature (engine pieces + adapter) and the polished
- * background, hosts the re-skinned duel Title, and routes the three modes. The
- * round / match-result screens are stubbed ("soon") and filled in over Phases 3–5;
- * the leaderboard panel is reused. Engine stays Telegram-free — only the adapter
- * touches the platform.
+ * The duel orchestrator. Owns the screen router (title → round → result →
+ * leaderboard) and wires input, the match/round logic, and the views together.
+ * Stays Telegram-agnostic — it only ever talks to the injected adapter (haptics,
+ * score submission, share, the sign-up CTA).
  */
 export class Game {
   private screen: Screen = 'title';
   private mode: Mode = 'practice';
   private readonly title = new Title();
+  private readonly bank = new PuzzleBank();
+  private readonly roundView = new RoundView();
+  private match: Match | null = null;
 
   private bgScroll = 0;
   private pulse = 0;
@@ -36,6 +42,7 @@ export class Game {
     private readonly input: Input,
     private readonly audio: Audio,
     private readonly particles: Particles,
+    private readonly rng: Rng,
     private readonly adapter: TelegramAdapter,
   ) {}
 
@@ -44,32 +51,25 @@ export class Game {
     this.bgScroll += dt * 16;
     if (this.input.consumeFire()) this.onTap();
     this.particles.update(dt);
+
+    if (this.screen === 'round' && this.match) {
+      const r = this.match.round;
+      r.update(dt);
+      this.roundView.update(dt, r);
+    }
   }
 
-  private onTap(): void {
-    const px = this.input.pointerX;
-    const py = this.input.pointerY;
+  // ---- lifecycle ---------------------------------------------------------
+  private startMatch(mode: Mode): void {
+    this.mode = mode;
+    this.match = new Match(this.bank.pick(CONFIG.ROUNDS, this.rng));
+    this.roundView.reset();
+    this.screen = 'round';
+  }
 
-    if (this.screen === 'title') {
-      const id = hitButton(this.title.buttons(this.vp), px, py);
-      if (!id) return;
-      this.audio.coin();
-      if (id === 'challenge') {
-        this.mode = 'challenge';
-        this.screen = 'soon';
-      } else if (id === 'practice') {
-        this.mode = 'practice';
-        this.screen = 'soon';
-      } else if (id === 'leaderboard') {
-        this.enterLeaderboard();
-      }
-      return;
-    }
-
-    if (hitButton(this.backButtons(), px, py) === 'back') {
-      this.audio.coin();
-      this.screen = 'title';
-    }
+  private finishMatch(): void {
+    if (this.match) void this.adapter.submitScore(this.match.correctCount);
+    this.screen = 'result';
   }
 
   private enterLeaderboard(): void {
@@ -87,6 +87,88 @@ export class Game {
       });
   }
 
+  // ---- input -------------------------------------------------------------
+  private onTap(): void {
+    const px = this.input.pointerX;
+    const py = this.input.pointerY;
+
+    switch (this.screen) {
+      case 'title':
+        this.onTapTitle(px, py);
+        break;
+      case 'round':
+        this.onTapRound(px, py);
+        break;
+      case 'result':
+        this.onTapResult(px, py);
+        break;
+      case 'leaderboard':
+        if (hitButton(this.backButtons(), px, py) === 'back') {
+          this.audio.coin();
+          this.screen = 'title';
+        }
+        break;
+    }
+  }
+
+  private onTapTitle(px: number, py: number): void {
+    const id = hitButton(this.title.buttons(this.vp), px, py);
+    if (!id) return;
+    this.audio.coin();
+    if (id === 'challenge') this.startMatch('challenge');
+    else if (id === 'practice') this.startMatch('practice');
+    else if (id === 'leaderboard') this.enterLeaderboard();
+  }
+
+  private onTapRound(px: number, py: number): void {
+    const m = this.match;
+    if (!m) return;
+    const r = m.round;
+
+    if (r.phase === 'decide') {
+      const inside = (rect: { x: number; y: number; w: number; h: number }): boolean =>
+        px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
+      if (inside(this.roundView.buyRect(this.vp))) this.lockCall('up');
+      else if (inside(this.roundView.sellRect(this.vp))) this.lockCall('down');
+      return;
+    }
+
+    if (r.phase === 'reveal' || r.phase === 'done') {
+      if (this.roundView.hitVerify(px, py)) {
+        this.roundView.toggleVerify();
+        this.audio.coin();
+        return;
+      }
+      if (r.phase === 'done') {
+        const b = this.roundView.continueButton(this.vp, m.isLast);
+        if (hitButton([b], px, py) === 'continue') {
+          this.audio.coin();
+          if (m.isLast) this.finishMatch();
+          else {
+            m.advance();
+            this.roundView.reset();
+          }
+        }
+      }
+    }
+  }
+
+  private lockCall(call: 'up' | 'down'): void {
+    this.match!.round.lockIn(call);
+    this.audio.coin();
+    this.adapter.haptic('impact');
+  }
+
+  private onTapResult(px: number, py: number): void {
+    const id = hitButton(this.resultButtons(), px, py);
+    if (!id) return;
+    this.audio.coin();
+    if (id === 'replay') this.startMatch(this.mode);
+    else if (id === 'leaderboard') this.enterLeaderboard();
+    else if (id === 'back') this.screen = 'title';
+  }
+
+  // ---- button layouts ----------------------------------------------------
   private backButtons(): Button[] {
     const { w, h } = this.vp;
     const bw = Math.min(w * 0.5, 220);
@@ -94,8 +176,25 @@ export class Game {
     return [{ id: 'back', x: w / 2 - bw / 2, y: h * 0.86, w: bw, h: bh, label: COPY.back, kind: 'gold' }];
   }
 
-  // ---- render ------------------------------------------------------------
+  private resultButtons(): Button[] {
+    const { w, h } = this.vp;
+    const bw = Math.min(w * 0.72, 300);
+    const bx = w / 2 - bw / 2;
+    const bh = 52;
+    const gap = 12;
+    let y = h * 0.6;
+    const out: Button[] = [];
+    const add = (id: string, label: string, kind: Button['kind']): void => {
+      out.push({ id, x: bx, y, w: bw, h: bh, label, kind });
+      y += bh + gap;
+    };
+    add('replay', COPY.playAgain, 'gold');
+    add('leaderboard', COPY.leaderboard, 'ghost');
+    add('back', COPY.back, 'ghost');
+    return out;
+  }
 
+  // ---- render ------------------------------------------------------------
   render(_alpha: number): void {
     const { ctx, w, h } = this.vp;
     this.vp.begin();
@@ -104,7 +203,9 @@ export class Game {
     this.renderBackground();
 
     if (this.screen === 'title') this.title.render(ctx, this.vp, this.pulse);
-    else if (this.screen === 'soon') this.renderSoon();
+    else if (this.screen === 'round' && this.match)
+      this.roundView.render(ctx, this.vp, this.match.round, this.match.statuses());
+    else if (this.screen === 'result') this.renderResult();
     else if (this.screen === 'leaderboard') this.renderLeaderboard();
 
     this.particles.render(ctx);
@@ -138,28 +239,40 @@ export class Game {
     }
   }
 
-  private renderSoon(): void {
+  private renderResult(): void {
     const { ctx, w, h } = this.vp;
     const cx = w / 2;
-    const label = this.mode === 'challenge' ? COPY.challenge : COPY.practice;
+    const m = this.match;
+    const correct = m ? m.correctCount : 0;
+    const total = m ? m.total : CONFIG.ROUNDS;
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
-    ctx.fillText(COPY.soonTitle.toUpperCase(), cx, h * 0.4);
+    ctx.fillText(COPY.matchResult.toUpperCase(), cx, h * 0.2);
 
     ctx.fillStyle = colors.text;
-    ctx.font = `${fonts.weight.bold} ${Math.min(w * 0.06, 24)}px ${fonts.family}`;
-    ctx.fillText(label, cx, h * 0.46);
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.2, 84)}px ${fonts.family}`;
+    ctx.fillText(`${correct}/${total}`, cx, h * 0.34);
+
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 16px ${fonts.family}`;
+    ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}`, cx, h * 0.4);
 
     ctx.fillStyle = colors.textMuted;
-    ctx.font = `${fonts.weight.medium} 14px ${fonts.family}`;
-    wrapText(ctx, COPY.soonBody(label), Math.min(w * 0.8, 340)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.52 + i * 20),
+    ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+    wrapText(ctx, COPY.rebateReminder, Math.min(w * 0.82, 340)).forEach((ln, i) =>
+      ctx.fillText(ln, cx, h * 0.47 + i * 18),
     );
 
-    for (const b of this.backButtons()) drawButton(ctx, b);
+    for (const b of this.resultButtons()) drawButton(ctx, b);
+
+    ctx.fillStyle = 'rgba(138,148,166,0.7)';
+    ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
+    wrapText(ctx, COPY.pointsDisclaimer, Math.min(w * 0.86, 360)).forEach((ln, i) =>
+      ctx.fillText(ln, cx, h * 0.955 + i * 13),
+    );
     ctx.textAlign = 'left';
   }
 
