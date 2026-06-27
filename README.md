@@ -54,7 +54,9 @@ after the call. **Never fake a candle.**
 - [x] **Phase 1 — pivot scaffold:** gutted Rebate Rush gameplay; reskinned title to the
   three duel modes; added `config.ts` / `Puzzle.ts` / `data/`; kept engine, brand,
   glass, adapter. Bootable, on the same polish bar.
-- [ ] Phase 2 — data pipeline: real, balanced `puzzles.json` (≥500) incl. XAU/USD + EUR/USD
+- [x] **Phase 2 — data pipeline:** `data-pipeline/` builds a real, exactly-50/50,
+  de-duped `puzzles.json` (576, incl. XAU/USD + EUR/USD) from Binance + Dukascopy,
+  with `verify` metadata. Run with `npm run build:data -w @rebate-rush/data-pipeline`.
 - [ ] Phase 3 — round engine (solo): playback → freeze → 8s call → real reveal → ✓/✗ + verify chip
 - [ ] Phase 4 — juice & brand: reveal flair, combo, rebate reminder, result + CTA, leaderboard
 - [ ] Phase 5 — match layer + async PvP: seed → shared 4, challenge deep-link, server-side scoring
