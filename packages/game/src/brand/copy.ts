@@ -86,6 +86,9 @@ export function sourceLabel(source: string): string {
   return source;
 }
 
-/** Sign-up funnel target (SPEC §6) — tagged for this game's campaign. */
-export const SIGNUP_URL =
-  'https://rebategain.com/signup?utm_source=telegram&utm_medium=game&utm_campaign=bull_or_bear';
+/**
+ * Sign-up funnel target (SPEC §6). RebateGain's auth entry — it starts its own
+ * OAuth/PKCE flow, so we link the clean login URL rather than a one-time authorize
+ * link (those carry single-use code_challenge/state that only work for one session).
+ */
+export const SIGNUP_URL = 'https://auth.rebategain.com/login';

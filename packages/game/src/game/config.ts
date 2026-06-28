@@ -14,8 +14,8 @@ export const CONFIG = {
   PLAYBACK_MS: 4000,
   /** Reveal duration for animating the real future candles. */
   REVEAL_MS: 3000,
-  /** Rounds per match. */
-  ROUNDS: 4,
+  /** Rounds per match. 10 so a leaderboard score spreads out and feels earned. */
+  ROUNDS: 10,
   /** Sudden-death extra round on a tie. */
   TIEBREAKER: true,
 } as const;

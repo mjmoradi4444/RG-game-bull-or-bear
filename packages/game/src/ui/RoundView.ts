@@ -58,7 +58,9 @@ export class RoundView {
 
   // ---- layout (shared by render + hit-test) ------------------------------
   chartRect(vp: Viewport): Rect {
-    return { x: vp.w * 0.06, y: vp.h * 0.155, w: vp.w * 0.88, h: vp.h * 0.4 };
+    // Bigger + more dominant so it reads like a real trading terminal, not a panel
+    // (but leaving room below for the call / verdict text).
+    return { x: vp.w * 0.06, y: vp.h * 0.135, w: vp.w * 0.88, h: vp.h * 0.42 };
   }
 
   buyRect(vp: Viewport): Rect {
@@ -132,8 +134,8 @@ export class RoundView {
     const cx = vp.w / 2;
     // Tally pips.
     const n = statuses.length;
-    const pipR = 5;
-    const gap = 16;
+    const pipR = 4;
+    const gap = 14;
     const totalW = (n - 1) * gap;
     let x = cx - totalW / 2;
     const py = vp.h * 0.05;
@@ -214,9 +216,9 @@ export class RoundView {
     if (flash > 0.01) {
       ctx.save();
       ctx.globalAlpha = flash;
-      ctx.fillStyle = colors.rebateGold;
-      ctx.font = `${fonts.weight.black} ${Math.min(vp.w * 0.1, 40)}px ${fonts.family}`;
-      ctx.fillText(COPY.callIt, cx, vp.h * 0.42);
+      ctx.fillStyle = colors.text;
+      ctx.font = `${fonts.weight.bold} ${Math.min(vp.w * 0.06, 24)}px ${fonts.family}`;
+      ctx.fillText(COPY.callIt, cx, vp.h * 0.405);
       ctx.restore();
     }
     ctx.fillStyle = colors.textMuted;
