@@ -48,6 +48,16 @@ export const COPY = {
   streak: 'STREAK',
   bestStreak: 'Best streak',
 
+  // Async duel (SPEC §4)
+  you: 'You',
+  vs: 'vs',
+  youWin: 'You win!',
+  youLose: 'You lose',
+  tie: 'Tie',
+  shareToChallenge: 'Share this link to challenge a friend',
+  challengeMsg: (correct: number, total: number): string =>
+    `I scored ${correct}/${total} on the RebateGain Trading Duel. Can you beat me?`,
+
   // Compliance (SPEC §9)
   disclaimer:
     'A game for entertainment — not trading advice or signals. Past performance does not predict future results.',

@@ -2,13 +2,14 @@ import type { Viewport } from '../engine/Viewport';
 import type { Input } from '../engine/Input';
 import type { Audio } from '../engine/Audio';
 import type { Particles } from '../engine/Particles';
-import type { Rng } from '../engine/Rng';
+import { Rng } from '../engine/Rng';
 import type { LeaderEntry, TelegramAdapter } from '../telegram/TelegramAdapter';
 import type { Mode, Screen } from './types';
 import { CONFIG } from './config';
 import { PuzzleBank } from './PuzzleBank';
 import { Match } from './Match';
 import type { Round } from './Round';
+import { type Challenge, challengeUrl, decodeChallenge, makeSeed } from './Challenge';
 import { accuracyPct } from './scoring';
 import { Title } from '../ui/Title';
 import { RoundView } from '../ui/RoundView';
@@ -45,12 +46,15 @@ export class Game {
   private leaderboard: LeaderEntry[] = [];
   private leaderboardLoading = false;
 
+  // Async duel (SPEC §4): the seed both players share + the incoming challenger.
+  private matchSeed = 0;
+  private opponent: Challenge | null = null;
+
   constructor(
     private readonly vp: Viewport,
     private readonly input: Input,
     private readonly audio: Audio,
     private readonly particles: Particles,
-    private readonly rng: Rng,
     private readonly adapter: TelegramAdapter,
   ) {}
 
@@ -112,9 +116,17 @@ export class Game {
   }
 
   // ---- lifecycle ---------------------------------------------------------
+  /** Resolve an incoming challenge deep-link. Call once after the adapter is ready. */
+  handleStartParam(): void {
+    this.opponent = decodeChallenge(this.adapter.getStartParam());
+    if (this.opponent) this.mode = 'challenge';
+  }
+
   private startMatch(mode: Mode): void {
     this.mode = mode;
-    this.match = new Match(this.bank.pick(CONFIG.ROUNDS, this.rng));
+    // Challenge mode replays the opponent's seed (same 4 puzzles); otherwise fresh.
+    this.matchSeed = mode === 'challenge' && this.opponent ? this.opponent.seed : makeSeed();
+    this.match = new Match(this.bank.pick(CONFIG.ROUNDS, new Rng(this.matchSeed)));
     this.roundView.reset();
     this.combo = 0;
     this.bestCombo = 0;
@@ -220,11 +232,32 @@ export class Game {
     const id = hitButton(this.resultButtons(), px, py);
     if (!id) return;
     this.audio.coin();
-    if (id === 'cta') this.adapter.openLink(SIGNUP_URL);
-    else if (id === 'rematch') this.startMatch(this.mode);
-    else if (id === 'leaderboard') this.enterLeaderboard();
-    else if (id === 'share') this.adapter.share();
-    else if (id === 'menu') this.screen = 'title';
+    if (id === 'cta') {
+      this.adapter.openLink(SIGNUP_URL);
+    } else if (id === 'rematch') {
+      if (this.mode === 'challenge') this.opponent = null; // a fresh challenge to send
+      this.startMatch(this.mode);
+    } else if (id === 'leaderboard') {
+      this.enterLeaderboard();
+    } else if (id === 'share') {
+      this.shareResult();
+    } else if (id === 'menu') {
+      this.screen = 'title';
+    }
+  }
+
+  private shareResult(): void {
+    const correct = this.match ? this.match.correctCount : 0;
+    const total = this.match ? this.match.total : CONFIG.ROUNDS;
+    if (this.mode === 'challenge') {
+      const me = this.adapter.getUser()?.name ?? 'You';
+      this.adapter.share(
+        COPY.challengeMsg(correct, total),
+        challengeUrl({ seed: this.matchSeed, score: correct, name: me }),
+      );
+    } else {
+      this.adapter.share();
+    }
   }
 
   // ---- button layouts ----------------------------------------------------
@@ -248,7 +281,8 @@ export class Game {
     // The funnel CTA first (the goal), then rematch, then a leaderboard / share row.
     out.push({ id: 'cta', x: bx, y, w: bw, h: bh, label: COPY.cta, kind: 'primary' });
     y += bh + gap;
-    out.push({ id: 'rematch', x: bx, y, w: bw, h: bh, label: COPY.rematch, kind: 'gold' });
+    const replayLabel = this.mode === 'challenge' ? COPY.rematch : COPY.playAgain;
+    out.push({ id: 'rematch', x: bx, y, w: bw, h: bh, label: replayLabel, kind: 'gold' });
     y += bh + gap;
     const half = (bw - gap) / 2;
     out.push({ id: 'leaderboard', x: bx, y, w: half, h: bh, label: COPY.leaderboard, kind: 'ghost' });
@@ -324,15 +358,20 @@ export class Game {
     ctx.font = `${fonts.weight.black} ${Math.min(w * 0.2, 84)}px ${fonts.family}`;
     ctx.fillText(`${correct}/${total}`, cx, h * 0.3);
 
-    ctx.fillStyle = colors.rebateGold;
-    ctx.font = `${fonts.weight.bold} 16px ${fonts.family}`;
-    const streak = this.bestCombo >= 2 ? `   ·   ${COPY.bestStreak} ×${this.bestCombo}` : '';
-    ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}${streak}`, cx, h * 0.36);
+    if (this.mode === 'challenge') {
+      this.renderDuelLine(correct, total, h, cx);
+    } else {
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.bold} 16px ${fonts.family}`;
+      const streak = this.bestCombo >= 2 ? `   ·   ${COPY.bestStreak} ×${this.bestCombo}` : '';
+      ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}${streak}`, cx, h * 0.36);
+    }
 
     ctx.fillStyle = 'rgba(245,196,81,0.9)';
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+    ctx.textAlign = 'center';
     wrapText(ctx, COPY.rebateReminder, Math.min(w * 0.82, 340)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.43 + i * 18),
+      ctx.fillText(ln, cx, h * 0.47 + i * 18),
     );
 
     for (const b of this.resultButtons()) drawButton(ctx, b);
@@ -343,6 +382,27 @@ export class Game {
       ctx.fillText(ln, cx, h * 0.955 + i * 13),
     );
     ctx.textAlign = 'left';
+  }
+
+  /** The duel head-to-head (incoming challenge) or the share prompt (outgoing). */
+  private renderDuelLine(correct: number, total: number, h: number, cx: number): void {
+    const { ctx } = this.vp;
+    ctx.textAlign = 'center';
+    if (this.opponent) {
+      const opp = this.opponent.score;
+      ctx.fillStyle = colors.text;
+      ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
+      ctx.fillText(`${COPY.you} ${correct}/${total}   ${COPY.vs}   ${this.opponent.name} ${opp}/${total}`, cx, h * 0.36);
+      const win = correct > opp;
+      const lose = correct < opp;
+      ctx.fillStyle = win ? colors.up : lose ? colors.down : colors.textMuted;
+      ctx.font = `${fonts.weight.black} 20px ${fonts.family}`;
+      ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, h * 0.41);
+    } else {
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+      ctx.fillText(COPY.shareToChallenge, cx, h * 0.38);
+    }
   }
 
   private renderLeaderboard(): void {

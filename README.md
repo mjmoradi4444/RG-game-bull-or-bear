@@ -66,6 +66,10 @@ after the call. **Never fake a candle.**
   screen — score · accuracy · best streak · rebate reminder · primary CTA
   (`Trade for real → RebateGain`) · Rematch · Leaderboard · Share. Buttons auto-fit
   long labels.
-- [ ] Phase 5 — match layer + async PvP: seed → shared 4, challenge deep-link, server-side scoring
+- [x] **Phase 5 — match layer + async PvP (client):** deterministic match **seed** → the
+  same 4 puzzles for both players · unicode-safe challenge **deep-link** codec
+  (`?startapp=duel_…`) · incoming-challenge resolve → head-to-head result (You vs
+  friend → win / lose / tie) · Rematch · Share link. The bot's **server-side scoring**
+  + match endpoints land in Phase 6.
 - [ ] Phase 6 — Telegram + hardening: Mini App `startapp` + Games score, bot endpoints, security, README
 - [ ] Phase 7 — *(later)* real-time live duel

@@ -40,12 +40,22 @@ export interface TelegramAdapter {
   /** Fetch the leaderboard to render in-game. */
   getLeaderboard(): Promise<LeaderEntry[]>;
 
-  /** Share the game (inline share on Games, WebApp share on Mini App). */
-  share(): void;
+  /**
+   * Share the game / a duel challenge (inline share on Games, WebApp share on Mini
+   * App). Optional text + deep link let the async duel post "beat my score 👇".
+   */
+  share(text?: string, url?: string): void;
 
   /** Fire platform haptics on mobile; no-op on desktop / plain browser. */
   haptic(kind: HapticKind): void;
 
   /** Open an external link — used for the RebateGain sign-up CTA. */
   openLink(url: string): void;
+
+  /**
+   * The launch deep-link payload, if any — e.g. the `duel_<token>` carried by a
+   * challenge link (`?startapp=` on Mini App, a URL param on Games). Null on a cold
+   * open. Drives the async "challenge a friend" flow (SPEC §4.2).
+   */
+  getStartParam(): string | null;
 }

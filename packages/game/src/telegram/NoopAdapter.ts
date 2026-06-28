@@ -35,8 +35,9 @@ export class NoopAdapter implements TelegramAdapter {
     ];
   }
 
-  share(): void {
-    console.info('[NoopAdapter] share()');
+  share(text?: string, url?: string): void {
+    console.info('[NoopAdapter] share()', text, url);
+    if (url) void navigator.clipboard?.writeText(url).catch(() => {});
   }
 
   haptic(kind: HapticKind): void {
@@ -46,5 +47,11 @@ export class NoopAdapter implements TelegramAdapter {
   openLink(url: string): void {
     console.info('[NoopAdapter] openLink(', url, ')');
     window.open(url, '_blank', 'noopener');
+  }
+
+  /** Local dev: read the challenge payload from `?startapp=` / `?duel=` on the URL. */
+  getStartParam(): string | null {
+    const q = new URLSearchParams(window.location.search);
+    return q.get('startapp') ?? q.get('duel') ?? null;
   }
 }

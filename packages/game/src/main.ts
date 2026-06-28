@@ -20,7 +20,7 @@ const audio = new Audio();
 const rng = new Rng();
 const particles = new Particles(rng, 500);
 const adapter = selectAdapter();
-const game = new Game(viewport, input, audio, particles, rng, adapter);
+const game = new Game(viewport, input, audio, particles, adapter);
 
 // Unlock WebAudio on the first user gesture (browser requirement).
 input.onFirstGesture(() => audio.resume());
@@ -42,6 +42,7 @@ if (import.meta.env.DEV) {
 
 async function boot(): Promise<void> {
   await adapter.ready();
+  game.handleStartParam(); // resolve an incoming challenge deep-link, if any
   loop.start();
 }
 
