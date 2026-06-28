@@ -111,6 +111,7 @@ export class RoundView {
       priceMax: this.curMax,
       freezeClose: round.puzzle.freezeClose,
       showFreezeLine: round.phase !== 'preroll' && round.phase !== 'playback',
+      timeframe: round.puzzle.timeframe,
     });
 
     if (showFuture) this.drawReveal(ctx, vp, round, combo);
