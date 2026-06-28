@@ -1,7 +1,9 @@
 import type { HapticKind, LeaderEntry, TelegramAdapter, TelegramUser } from './TelegramAdapter';
 
 const GAMES_JS = 'https://telegram.org/js/games.js';
-const SCORE_API = import.meta.env.VITE_SCORE_API as string | undefined;
+// Empty = same origin (the bot serves the game + API together) → relative '/score'.
+// Set VITE_SCORE_API only when the API lives on a different host.
+const SCORE_API = (import.meta.env.VITE_SCORE_API as string | undefined) ?? '';
 
 interface GameProxy {
   initParams?: Record<string, unknown>;
@@ -30,7 +32,7 @@ export class GamesPlatformAdapter implements TelegramAdapter {
   }
 
   async submitScore(score: number): Promise<void> {
-    if (!SCORE_API || !this.tgctx) return;
+    if (!this.tgctx) return;
     await fetch(`${SCORE_API}/score`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -39,7 +41,7 @@ export class GamesPlatformAdapter implements TelegramAdapter {
   }
 
   async getLeaderboard(): Promise<LeaderEntry[]> {
-    if (!SCORE_API || !this.tgctx) return [];
+    if (!this.tgctx) return [];
     try {
       const res = await fetch(`${SCORE_API}/highscores?gctx=${encodeURIComponent(this.tgctx)}`);
       const data = (await res.json()) as {

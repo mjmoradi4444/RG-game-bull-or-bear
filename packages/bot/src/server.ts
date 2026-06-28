@@ -1,5 +1,8 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { dirname, extname, join, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config';
 import { bot } from './bot';
 import { clampScore, rateLimit, verifyContext } from './security';
@@ -33,6 +36,37 @@ async function readBody(req: IncomingMessage, cap = 8192): Promise<string> {
   return data;
 }
 
+// Serve the built game (packages/game/dist) from the same origin as the API, so one
+// HTTPS host covers both the webview and /score — and the frontend can call the API
+// with relative paths. Build the game first (`npm run build -w @rebate-rush/game`).
+const GAME_DIST = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'game', 'dist');
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json',
+};
+
+async function serveStatic(res: ServerResponse, pathname: string): Promise<boolean> {
+  const rel = pathname === '/' ? '/index.html' : pathname;
+  const filePath = normalize(join(GAME_DIST, decodeURIComponent(rel)));
+  if (!filePath.startsWith(GAME_DIST)) return false; // no path traversal
+  try {
+    if (!(await stat(filePath)).isFile()) return false;
+    res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream' });
+    res.end(await readFile(filePath));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method === 'OPTIONS') {
     cors(res);
@@ -62,6 +96,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!ctx) return send(res, 401, { ok: false, error: 'bad_context' });
     const scores = await fetchHighScores(bot.api, ctx);
     return send(res, 200, { ok: true, scores });
+  }
+
+  // Static game (and SPA fallback to index.html for extensionless routes).
+  if (req.method === 'GET') {
+    if (await serveStatic(res, url.pathname)) return;
+    if (!extname(url.pathname) && (await serveStatic(res, '/index.html'))) return;
   }
 
   send(res, 404, { ok: false, error: 'not_found' });
