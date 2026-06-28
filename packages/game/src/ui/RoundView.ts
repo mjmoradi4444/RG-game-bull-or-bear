@@ -96,6 +96,7 @@ export class RoundView {
     vp: Viewport,
     round: Round,
     statuses: RoundStatus[],
+    combo = 0,
   ): void {
     this.drawHeader(ctx, vp, round, statuses);
 
@@ -112,7 +113,7 @@ export class RoundView {
       showFreezeLine: round.phase !== 'preroll' && round.phase !== 'playback',
     });
 
-    if (showFuture) this.drawReveal(ctx, vp, round);
+    if (showFuture) this.drawReveal(ctx, vp, round, combo);
     else if (round.phase === 'decide') this.drawDecide(ctx, vp, round);
     else if (round.phase === 'preroll') this.drawPreroll(ctx, vp, round);
     else this.drawScanning(ctx, vp); // playback
@@ -225,7 +226,7 @@ export class RoundView {
     this.drawCallButton(ctx, this.sellRect(vp), 'sell', true);
   }
 
-  private drawReveal(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round): void {
+  private drawReveal(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round, combo: number): void {
     const cx = vp.w / 2;
     // Locked call indicator (always show what was called).
     ctx.textAlign = 'center';
@@ -246,6 +247,13 @@ export class RoundView {
     ctx.fillStyle = ok ? colors.up : colors.down;
     ctx.font = `${fonts.weight.black} ${Math.min(vp.w * 0.085, 34)}px ${fonts.family}`;
     ctx.fillText(ok ? `✓ ${COPY.correct}` : `✗ ${COPY.wrong}`, cx, vp.h * 0.655);
+
+    // Combo flair — cosmetic, solo only (SPEC §5): a gold streak on consecutive calls.
+    if (ok && combo >= 2) {
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.black} 14px ${fonts.family}`;
+      ctx.fillText(`${COPY.streak} ×${combo}`, cx, vp.h * 0.69);
+    }
 
     // Verify chip (the trust feature) + rebate reminder.
     this.chipRect = drawVerifyChip(ctx, vp, round.puzzle, vp.h * 0.715, this.verifyExpanded);

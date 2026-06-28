@@ -60,9 +60,16 @@ export function drawButton(ctx: CanvasRenderingContext2D, b: Button): void {
   }
 
   ctx.fillStyle = textColor;
-  ctx.font = `${fonts.weight.bold} ${Math.min(15, b.h * 0.42)}px ${fonts.family}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  // Shrink long labels (e.g. the CTA) to fit the button width with padding.
+  const maxTextW = b.w - 24;
+  let fontSize = Math.min(15, b.h * 0.42);
+  for (;;) {
+    ctx.font = `${fonts.weight.bold} ${fontSize}px ${fonts.family}`;
+    if (fontSize <= 11 || ctx.measureText(b.label).width <= maxTextW) break;
+    fontSize -= 0.5;
+  }
   ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
   ctx.textBaseline = 'alphabetic';
 }

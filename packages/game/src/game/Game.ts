@@ -8,13 +8,14 @@ import type { Mode, Screen } from './types';
 import { CONFIG } from './config';
 import { PuzzleBank } from './PuzzleBank';
 import { Match } from './Match';
+import type { Round } from './Round';
 import { accuracyPct } from './scoring';
 import { Title } from '../ui/Title';
 import { RoundView } from '../ui/RoundView';
 import { type Button, drawButton, hitButton } from '../ui/Button';
 import { roundRectPath } from '../ui/glass';
 import { colors, fonts } from '../brand/tokens';
-import { COPY } from '../brand/copy';
+import { COPY, SIGNUP_URL } from '../brand/copy';
 import { wrapText } from '../ui/text';
 
 /**
@@ -34,6 +35,13 @@ export class Game {
   private bgScroll = 0;
   private pulse = 0;
 
+  // Reveal juice + cosmetic combo (SPEC §4.5 / §5).
+  private combo = 0;
+  private bestCombo = 0;
+  private shake = 0;
+  private verdictFired = false;
+  private lastRoundIndex = -1;
+
   private leaderboard: LeaderEntry[] = [];
   private leaderboardLoading = false;
 
@@ -49,13 +57,57 @@ export class Game {
   update(dt: number): void {
     this.pulse += dt;
     this.bgScroll += dt * 16;
+    this.shake = Math.max(0, this.shake - dt);
     if (this.input.consumeFire()) this.onTap();
     this.particles.update(dt);
 
     if (this.screen === 'round' && this.match) {
       const r = this.match.round;
+      if (r.index !== this.lastRoundIndex) {
+        this.lastRoundIndex = r.index;
+        this.verdictFired = false;
+      }
       r.update(dt);
       this.roundView.update(dt, r);
+      // Fire the reveal juice exactly once, when the verdict becomes visible.
+      if (!this.verdictFired && r.verdictShown) {
+        this.verdictFired = true;
+        this.onVerdict(r);
+      }
+    }
+  }
+
+  /** Reveal flair: gold/green burst + win SFX on ✓; shake + loss SFX on ✗. */
+  private onVerdict(r: Round): void {
+    const { w, h } = this.vp;
+    if (r.correct) {
+      this.combo++;
+      if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+      this.audio.win();
+      this.adapter.haptic('success');
+      this.particles.burst(w / 2, h * 0.64, {
+        color: [22, 199, 132],
+        count: 18,
+        speed: [90, 280],
+        life: [0.5, 0.95],
+        size: [2, 4.5],
+        gravity: 430,
+        spread: [-Math.PI * 0.85, -Math.PI * 0.15],
+      });
+      this.particles.burst(w / 2, h * 0.64, {
+        color: [245, 196, 81],
+        count: 10,
+        speed: [60, 210],
+        life: [0.5, 0.9],
+        size: [2, 4],
+        gravity: 380,
+        spread: [-Math.PI * 0.9, -Math.PI * 0.1],
+      });
+    } else {
+      this.combo = 0;
+      this.audio.loss();
+      this.adapter.haptic('warning');
+      this.shake = 0.4;
     }
   }
 
@@ -64,6 +116,11 @@ export class Game {
     this.mode = mode;
     this.match = new Match(this.bank.pick(CONFIG.ROUNDS, this.rng));
     this.roundView.reset();
+    this.combo = 0;
+    this.bestCombo = 0;
+    this.shake = 0;
+    this.verdictFired = false;
+    this.lastRoundIndex = -1;
     this.screen = 'round';
   }
 
@@ -163,9 +220,11 @@ export class Game {
     const id = hitButton(this.resultButtons(), px, py);
     if (!id) return;
     this.audio.coin();
-    if (id === 'replay') this.startMatch(this.mode);
+    if (id === 'cta') this.adapter.openLink(SIGNUP_URL);
+    else if (id === 'rematch') this.startMatch(this.mode);
     else if (id === 'leaderboard') this.enterLeaderboard();
-    else if (id === 'back') this.screen = 'title';
+    else if (id === 'share') this.adapter.share();
+    else if (id === 'menu') this.screen = 'title';
   }
 
   // ---- button layouts ----------------------------------------------------
@@ -178,19 +237,22 @@ export class Game {
 
   private resultButtons(): Button[] {
     const { w, h } = this.vp;
-    const bw = Math.min(w * 0.72, 300);
+    const bw = Math.min(w * 0.82, 360);
     const bx = w / 2 - bw / 2;
-    const bh = 52;
-    const gap = 12;
-    let y = h * 0.6;
+    const bh = 50;
+    const gap = 11;
+    let y = h * 0.52;
     const out: Button[] = [];
-    const add = (id: string, label: string, kind: Button['kind']): void => {
-      out.push({ id, x: bx, y, w: bw, h: bh, label, kind });
-      y += bh + gap;
-    };
-    add('replay', COPY.playAgain, 'gold');
-    add('leaderboard', COPY.leaderboard, 'ghost');
-    add('back', COPY.back, 'ghost');
+    // Top-left menu (back to title).
+    out.push({ id: 'menu', x: 14, y: h * 0.035, w: 96, h: 36, label: `‹ ${COPY.menu}`, kind: 'ghost' });
+    // The funnel CTA first (the goal), then rematch, then a leaderboard / share row.
+    out.push({ id: 'cta', x: bx, y, w: bw, h: bh, label: COPY.cta, kind: 'primary' });
+    y += bh + gap;
+    out.push({ id: 'rematch', x: bx, y, w: bw, h: bh, label: COPY.rematch, kind: 'gold' });
+    y += bh + gap;
+    const half = (bw - gap) / 2;
+    out.push({ id: 'leaderboard', x: bx, y, w: half, h: bh, label: COPY.leaderboard, kind: 'ghost' });
+    out.push({ id: 'share', x: bx + half + gap, y, w: half, h: bh, label: COPY.share, kind: 'ghost' });
     return out;
   }
 
@@ -203,9 +265,15 @@ export class Game {
     this.renderBackground();
 
     if (this.screen === 'title') this.title.render(ctx, this.vp, this.pulse);
-    else if (this.screen === 'round' && this.match)
-      this.roundView.render(ctx, this.vp, this.match.round, this.match.statuses());
-    else if (this.screen === 'result') this.renderResult();
+    else if (this.screen === 'round' && this.match) {
+      ctx.save();
+      if (this.shake > 0) {
+        const m = 7 * this.shake;
+        ctx.translate((Math.random() * 2 - 1) * m, (Math.random() * 2 - 1) * m);
+      }
+      this.roundView.render(ctx, this.vp, this.match.round, this.match.statuses(), this.combo);
+      ctx.restore();
+    } else if (this.screen === 'result') this.renderResult();
     else if (this.screen === 'leaderboard') this.renderLeaderboard();
 
     this.particles.render(ctx);
@@ -250,20 +318,21 @@ export class Game {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
-    ctx.fillText(COPY.matchResult.toUpperCase(), cx, h * 0.2);
+    ctx.fillText(COPY.matchResult.toUpperCase(), cx, h * 0.16);
 
     ctx.fillStyle = colors.text;
     ctx.font = `${fonts.weight.black} ${Math.min(w * 0.2, 84)}px ${fonts.family}`;
-    ctx.fillText(`${correct}/${total}`, cx, h * 0.34);
+    ctx.fillText(`${correct}/${total}`, cx, h * 0.3);
 
     ctx.fillStyle = colors.rebateGold;
     ctx.font = `${fonts.weight.bold} 16px ${fonts.family}`;
-    ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}`, cx, h * 0.4);
+    const streak = this.bestCombo >= 2 ? `   ·   ${COPY.bestStreak} ×${this.bestCombo}` : '';
+    ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}${streak}`, cx, h * 0.36);
 
-    ctx.fillStyle = colors.textMuted;
+    ctx.fillStyle = 'rgba(245,196,81,0.9)';
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
     wrapText(ctx, COPY.rebateReminder, Math.min(w * 0.82, 340)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.47 + i * 18),
+      ctx.fillText(ln, cx, h * 0.43 + i * 18),
     );
 
     for (const b of this.resultButtons()) drawButton(ctx, b);

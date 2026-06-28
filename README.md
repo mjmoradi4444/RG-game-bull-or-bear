@@ -61,7 +61,11 @@ after the call. **Never fake a candle.**
   `NoopAdapter` — pre-roll → candlestick playback → freeze + 8s BUY/SELL call → real
   future reveal → ✓/✗ with the verify chip + rebate reminder → result. New: `Chart`,
   `RoundView`, `VerifyChip`, `Round`, `Match`, `PuzzleBank`, `scoring`.
-- [ ] Phase 4 — juice & brand: reveal flair, combo, rebate reminder, result + CTA, leaderboard
+- [x] **Phase 4 — juice & brand:** reveal flair (gold/green burst on ✓, screen-shake +
+  loss SFX on ✗), cosmetic combo streak, win/loss SFX + haptics, and a branded result
+  screen — score · accuracy · best streak · rebate reminder · primary CTA
+  (`Trade for real → RebateGain`) · Rematch · Leaderboard · Share. Buttons auto-fit
+  long labels.
 - [ ] Phase 5 — match layer + async PvP: seed → shared 4, challenge deep-link, server-side scoring
 - [ ] Phase 6 — Telegram + hardening: Mini App `startapp` + Games score, bot endpoints, security, README
 - [ ] Phase 7 — *(later)* real-time live duel

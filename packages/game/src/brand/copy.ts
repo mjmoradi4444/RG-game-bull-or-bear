@@ -44,6 +44,9 @@ export const COPY = {
   rematch: 'Rematch',
   share: 'Share',
   back: 'Back',
+  menu: 'Menu',
+  streak: 'STREAK',
+  bestStreak: 'Best streak',
 
   // Compliance (SPEC §9)
   disclaimer:
