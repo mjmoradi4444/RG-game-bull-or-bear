@@ -49,6 +49,40 @@ mixes assets/timeframes, and dedupes, so a coin-flipper averages ~50% and any hi
 score is provably skill. The real date is stored only in a `verify` field, shown
 after the call. **Never fake a candle.**
 
+## Telegram & the bot (`packages/bot`)
+
+The bot serves the game on Telegram's **Games platform** and holds the score-writing
+token server-side (the browser never sees `BOT_TOKEN`).
+
+**BotFather setup (one-time):**
+1. `/newbot` → create the bot, get its token.
+2. `/setinline` → enable inline mode (mandatory for games).
+3. `/newgame` → set title, description, photo, and the **short name** (`bullorbear`).
+
+**Env** — `packages/bot/.env` (git-ignored; copy from `.env.example`):
+`BOT_TOKEN` (never commit — regenerate via BotFather if leaked) · `GAME_SHORT_NAME=bullorbear` ·
+`GAME_URL` (public HTTPS URL hosting `packages/game`) · `SCORE_SECRET` (HMAC key) ·
+`PORT` · `ALLOW_ORIGIN`. The game build reads `VITE_SCORE_API` (the bot's URL).
+
+**Run locally** (Telegram needs HTTPS + outbound to `api.telegram.org`):
+```bash
+npm run dev -w @rebate-rush/game                  # serves the game on :5174
+cloudflared tunnel --url http://localhost:5174    # → https://<id>.trycloudflare.com
+#   put that URL in bot/.env GAME_URL; put the bot's URL in the game's VITE_SCORE_API
+npm start -w @rebate-rush/bot                      # bot (long polling) + score API on :8080
+```
+Then open the bot in Telegram → `/start` → **Play**.
+
+**Runtime flow (SPEC §5.2):** Play → bot receives the `callback_query` → answers with
+`GAME_URL#tgctx=<signed>` → the game `POST`s its score + that token to `/score` → the
+bot verifies the HMAC, clamps, and calls **`setGameScore`**; the in-game board reads
+**`getGameHighScores`** via `GET /highscores`. Client scores are untrusted (signed
+context + clamp + per-user rate limit).
+
+**Deploy:** frontend (`npm run build -w @rebate-rush/game`) to Cloudflare Pages /
+Vercel (HTTPS); bot to Railway / Render / Fly (set env; switch long polling to a
+webhook for production).
+
 ## Status — phased build (see `SPEC.md` §11)
 
 - [x] **Phase 1 — pivot scaffold:** gutted Rebate Rush gameplay; reskinned title to the
@@ -71,5 +105,16 @@ after the call. **Never fake a candle.**
   (`?startapp=duel_…`) · incoming-challenge resolve → head-to-head result (You vs
   friend → win / lose / tie) · Rematch · Share link. The bot's **server-side scoring**
   + match endpoints land in Phase 6.
-- [ ] Phase 6 — Telegram + hardening: Mini App `startapp` + Games score, bot endpoints, security, README
+- [~] **Phase 6 — Telegram (Games platform) + bot:** `packages/bot` (grammY) — `/start`
+  sends the game, `callback_query` → game URL + HMAC-signed launch context, `POST /score`
+  → verify → `setGameScore`, `GET /highscores` → `getGameHighScores`. `GamesPlatformAdapter`
+  wired via `selectAdapter` (`#tgctx=` launch). Security: signed context, score clamp,
+  per-user rate limit, CORS. README: BotFather + env + run + deploy. **Remaining:** Mini
+  App (`startapp`) adapter for the deep-link duel, server-side duel match endpoints, and
+  the perf/safe-area/webview hardening pass.
 - [ ] Phase 7 — *(later)* real-time live duel
+
+> Verified locally: HMAC sign/verify/expiry/clamp unit-tested; the score API's routing,
+> CORS, and 401 gate confirmed via curl; bot + game type-check clean. The
+> `setGameScore`/long-poll path runs outside this sandbox (Telegram is unreachable from
+> here, though the token is valid) — test it end-to-end from a tunnelled dev server.
