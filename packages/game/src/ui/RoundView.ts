@@ -5,6 +5,7 @@ import type { Level } from '../game/levels';
 import { colors, fonts } from '../brand/tokens';
 import { COPY, assetLabel } from '../brand/copy';
 import { CONFIG } from '../game/config';
+import { explainOutcome } from '../game/priceAction';
 import { clamp, damp, easeOutCubic, TAU } from '../engine/math';
 import { wrapText } from './text';
 import { roundRectPath } from './glass';
@@ -253,43 +254,45 @@ export class RoundView {
 
   private drawReveal(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round, combo: number): void {
     const cx = vp.w / 2;
-    // Locked call indicator (always show what was called).
+    // Lead: what the player called.
     ctx.textAlign = 'center';
     ctx.fillStyle = colors.textMuted;
-    ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
     const callTxt =
       round.call === 'up'
         ? `${COPY.locked}: ${COPY.buy} ▲`
         : round.call === 'down'
           ? `${COPY.locked}: ${COPY.sell} ▼`
           : COPY.noCall;
-    ctx.fillText(callTxt, cx, vp.h * 0.6);
+    ctx.fillText(callTxt, cx, vp.h * 0.585);
 
     if (!round.verdictShown) return;
 
-    // Verdict.
+    // Verdict (+ cosmetic streak, solo only — SPEC §5).
     const ok = round.correct;
     ctx.fillStyle = ok ? colors.up : colors.down;
-    ctx.font = `${fonts.weight.black} ${Math.min(vp.w * 0.085, 34)}px ${fonts.family}`;
-    ctx.fillText(ok ? `✓ ${COPY.correct}` : `✗ ${COPY.wrong}`, cx, vp.h * 0.655);
+    ctx.font = `${fonts.weight.black} ${Math.min(vp.w * 0.08, 32)}px ${fonts.family}`;
+    const verdict = ok ? `✓ ${COPY.correct}` : `✗ ${COPY.wrong}`;
+    ctx.fillText(ok && combo >= 2 ? `${verdict}  ×${combo}` : verdict, cx, vp.h * 0.632);
 
-    // Combo flair — cosmetic, solo only (SPEC §5): a gold streak on consecutive calls.
-    if (ok && combo >= 2) {
-      ctx.fillStyle = colors.rebateGold;
-      ctx.font = `${fonts.weight.black} 14px ${fonts.family}`;
-      ctx.fillText(`${COPY.streak} ×${combo}`, cx, vp.h * 0.69);
-    }
-
-    // Verify chip (the trust feature) + rebate reminder.
-    this.chipRect = drawVerifyChip(ctx, vp, round.puzzle, vp.h * 0.715, this.verifyExpanded);
-
-    ctx.fillStyle = 'rgba(245,196,81,0.9)';
+    // Price-action teaching: why it resolved that way (the requested explanation).
+    const ex = explainOutcome(round.puzzle);
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+    ctx.fillText(ex.pattern, cx, vp.h * 0.668);
+    ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
-    ctx.textAlign = 'center';
-    const yReminder = this.verifyExpanded ? vp.h * 0.765 : vp.h * 0.755;
-    wrapText(ctx, COPY.rebateReminder, Math.min(vp.w * 0.82, 340)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, yReminder + i * 16),
+    wrapText(ctx, ex.why, Math.min(vp.w * 0.84, 350)).slice(0, 3).forEach((ln, i) =>
+      ctx.fillText(ln, cx, vp.h * 0.692 + i * 15),
     );
+
+    // Verify chip (trust) + a compact rebate reminder.
+    this.chipRect = drawVerifyChip(ctx, vp, round.puzzle, vp.h * 0.77, this.verifyExpanded);
+
+    ctx.fillStyle = 'rgba(245,196,81,0.85)';
+    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(COPY.rebateReminder, cx, vp.h * 0.82);
 
     if (round.phase === 'done') {
       drawButton(ctx, this.continueButton(vp, round.index >= round.total - 1));
