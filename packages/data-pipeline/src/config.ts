@@ -8,9 +8,19 @@ export const PARAMS = {
   STRIDE: 30,
   /** Degenerate filter: keep a clip only if |move| ≥ ATR_K × context ATR. */
   ATR_K: 0.6,
-  /** Max balanced clips kept per asset (keeps the mix varied, not crypto-heavy). */
-  PER_ASSET_CAP: 110,
-  TARGET_MIN: 500,
+  /** Ranging filter: drop clips whose context efficiency ratio is below this — no
+   *  readable trend means a call is luck, not skill (SPEC §3.3/§3.4). Calibrated to
+   *  the real ER distribution (intraday is noisy; median ER ≈ 0.17), this drops the
+   *  choppiest ~half. */
+  ER_MIN_TREND: 0.18,
+  /** Difficulty by trend clarity (efficiency ratio): a clean strong trend is easy to
+   *  read; a faint one is hard. Tiers: easy ≥ ER_EASY, med ≥ ER_MED, else hard. */
+  ER_EASY: 0.36,
+  ER_MED: 0.25,
+  /** Max balanced clips kept per (asset × difficulty) so every level stays 50/50 per
+   *  asset and no single asset dominates a tier. */
+  PER_GROUP_CAP: 40,
+  TARGET_MIN: 350,
 } as const;
 
 export interface AssetSpec {

@@ -24,6 +24,21 @@ export function computeATR(candles: Candle[]): number {
   return n ? sum / n : 0;
 }
 
+/**
+ * Kaufman efficiency ratio over a candle window's closes: net displacement ÷ total
+ * path length, in [0,1]. ~1 = a clean directional trend; ~0 = choppy / ranging. We
+ * use it to drop ranging clips (unreadable → luck) and to grade difficulty by how
+ * clear the trend is (SPEC §3.4 — test skill, not chance).
+ */
+export function efficiencyRatio(candles: Candle[]): number {
+  if (candles.length < 2) return 0;
+  let path = 0;
+  for (let i = 1; i < candles.length; i++) path += Math.abs(candles[i]!.c - candles[i - 1]!.c);
+  if (path === 0) return 0;
+  const net = Math.abs(candles[candles.length - 1]!.c - candles[0]!.c);
+  return net / path;
+}
+
 /** Seeded PRNG (mulberry32) so curation/shuffle is reproducible. */
 export function mulberry32(seed: number): () => number {
   let s = seed >>> 0;

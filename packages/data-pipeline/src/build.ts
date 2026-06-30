@@ -76,6 +76,7 @@ async function main(): Promise<void> {
 function printStats(puzzles: StoredPuzzle[], stats: CurateStats): void {
   const byAsset = new Map<string, { up: number; down: number }>();
   const byTf = new Map<string, number>();
+  const byDiff = new Map<string, number>();
   let up = 0;
   for (const p of puzzles) {
     const a = byAsset.get(p.asset) ?? { up: 0, down: 0 };
@@ -85,6 +86,7 @@ function printStats(puzzles: StoredPuzzle[], stats: CurateStats): void {
     } else a.down++;
     byAsset.set(p.asset, a);
     byTf.set(p.tf, (byTf.get(p.tf) ?? 0) + 1);
+    byDiff.set(p.d, (byDiff.get(p.d) ?? 0) + 1);
   }
 
   const total = puzzles.length || 1;
@@ -94,6 +96,12 @@ function printStats(puzzles: StoredPuzzle[], stats: CurateStats): void {
   console.log(`balance: up ${up} (${((up / total) * 100).toFixed(1)}%)  /  down ${puzzles.length - up}`);
   console.log(
     `degenerate filter: ${stats.totalRaw} raw → ${stats.afterDegenerateDrop} kept (dropped ${stats.droppedDegenerate})`,
+  );
+  console.log(
+    `ranging filter (ER≥${PARAMS.ER_MIN_TREND}): ${stats.afterDegenerateDrop} → ${stats.afterRangingDrop} kept (dropped ${stats.droppedRanging})`,
+  );
+  console.log(
+    `difficulty: ${['easy', 'med', 'hard'].map((d) => `${d}:${byDiff.get(d) ?? 0}`).join('  ')}`,
   );
   console.log(`timeframes: ${[...byTf].map(([k, v]) => `${k}:${v}`).join('  ')}`);
   console.log(`by asset:`);
@@ -106,7 +114,7 @@ function printStats(puzzles: StoredPuzzle[], stats: CurateStats): void {
     console.log(`  required ${req}: ${n > 0 ? `PRESENT (${n}) OK` : 'MISSING — FAIL'}`);
   }
   if (!SMOKE && puzzles.length < PARAMS.TARGET_MIN) {
-    console.log(`\n  NOTE: ${puzzles.length} < target ${PARAMS.TARGET_MIN}. Widen DUKA range or raise PER_ASSET_CAP.`);
+    console.log(`\n  NOTE: ${puzzles.length} < target ${PARAMS.TARGET_MIN}. Widen DUKA range, lower ER_MIN_TREND, or raise PER_GROUP_CAP.`);
   }
   console.log(`\nWrote → ${OUT}`);
 }

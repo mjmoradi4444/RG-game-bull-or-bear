@@ -23,6 +23,7 @@ export interface RawClip {
   deltaPct: number; // signed % move freeze→horizon
   absMove: number; // |close[freeze+H] - freezeClose|
   atr: number; // context average true range
+  er: number; // context efficiency ratio (0=ranging, 1=clean trend)
 }
 
 /**

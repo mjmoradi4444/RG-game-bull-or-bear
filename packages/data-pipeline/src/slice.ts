@@ -1,6 +1,6 @@
 import type { Candle, RawClip, Source, Timeframe } from './types';
 import { PARAMS } from './config';
-import { computeATR } from './util';
+import { computeATR, efficiencyRatio } from './util';
 
 /**
  * Slice a chronological candle series into clips of CONTEXT + HORIZON candles at a
@@ -39,6 +39,7 @@ export function sliceSeries(
       deltaPct: ((finalClose - freezeClose) / freezeClose) * 100,
       absMove,
       atr: computeATR(context),
+      er: efficiencyRatio(context),
     });
   }
   return clips;
