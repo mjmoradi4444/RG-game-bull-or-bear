@@ -234,6 +234,12 @@ export class Game {
     const r = m.round;
 
     if (r.phase === 'decide') {
+      const ctrl = this.roundView.hitControl(this.vp, px, py);
+      if (ctrl) {
+        this.roundView.applyControl(ctrl, r);
+        this.audio.coin();
+        return;
+      }
       const inside = (rect: { x: number; y: number; w: number; h: number }): boolean =>
         px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
       if (inside(this.roundView.buyRect(this.vp))) this.lockCall('up');

@@ -19,6 +19,8 @@ import { type ChipRect, drawVerifyChip, hitChip } from './VerifyChip';
  * price range and whether the verify chip is expanded. Exposes plain hit rects so
  * the orchestrator's tap routing matches exactly what's drawn.
  */
+const MIN_VIEW = 8;
+
 export class RoundView {
   private curMin = 0;
   private curMax = 1;
@@ -26,11 +28,83 @@ export class RoundView {
   private verifyExpanded = false;
   private chipRect: ChipRect | null = null;
 
+  // Zoom/pan view window over the context (decide phase only).
+  private viewStart = 0;
+  private viewCount = 0;
+  private vInited = false;
+
   /** Call when a new round becomes current. */
   reset(): void {
     this.inited = false;
     this.verifyExpanded = false;
     this.chipRect = null;
+    this.vInited = false;
+  }
+
+  // ---- zoom / pan (decide-phase chart navigation) ------------------------
+  private ctxLen(round: Round): number {
+    return round.puzzle.candles.length;
+  }
+
+  /** Visible window per phase: user-controlled during decide; fit-all otherwise. */
+  private effectiveView(round: Round): { start: number; count: number } {
+    const ctxLen = this.ctxLen(round);
+    const total = ctxLen + round.puzzle.future.length;
+    if (round.phase === 'decide') {
+      const count = clamp(this.viewCount || ctxLen, MIN_VIEW, ctxLen);
+      return { start: clamp(this.viewStart, 0, ctxLen - count), count };
+    }
+    if (round.phase === 'reveal' || round.phase === 'done') return { start: 0, count: total };
+    return { start: 0, count: ctxLen };
+  }
+
+  /** Apply a control-bar action by id. */
+  applyControl(id: string, round: Round): void {
+    const ctxLen = this.ctxLen(round);
+    if (id === 'fit') {
+      this.viewCount = ctxLen;
+      this.viewStart = 0;
+      return;
+    }
+    if (id === 'zoomIn' || id === 'zoomOut') {
+      const center = this.viewStart + this.viewCount / 2;
+      this.viewCount = clamp(this.viewCount * (id === 'zoomIn' ? 1 / 1.5 : 1.5), MIN_VIEW, ctxLen);
+      this.viewStart = clamp(center - this.viewCount / 2, 0, ctxLen - this.viewCount);
+      return;
+    }
+    if (id === 'panLeft' || id === 'panRight') {
+      const step = Math.max(1, Math.round(this.viewCount * 0.4));
+      this.viewStart = clamp(
+        this.viewStart + (id === 'panRight' ? step : -step),
+        0,
+        ctxLen - this.viewCount,
+      );
+    }
+  }
+
+  /** The control-bar buttons (decide phase). */
+  controlRects(vp: Viewport): Array<{ id: string; sym: string; x: number; y: number; w: number; h: number }> {
+    const ids: Array<[string, string]> = [
+      ['panLeft', '‹'],
+      ['zoomOut', '−'],
+      ['fit', '⤢'],
+      ['zoomIn', '+'],
+      ['panRight', '›'],
+    ];
+    const bw = 40;
+    const bh = 28;
+    const gap = 8;
+    const totalW = ids.length * bw + (ids.length - 1) * gap;
+    const x0 = vp.w / 2 - totalW / 2;
+    const y = this.chartRect(vp).y + this.chartRect(vp).h + 8;
+    return ids.map(([id, sym], i) => ({ id, sym, x: x0 + i * (bw + gap), y, w: bw, h: bh }));
+  }
+
+  hitControl(vp: Viewport, px: number, py: number): string | null {
+    for (const b of this.controlRects(vp)) {
+      if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) return b.id;
+    }
+    return null;
   }
 
   toggleVerify(): void {
@@ -41,13 +115,19 @@ export class RoundView {
     return hitChip(this.chipRect, px, py);
   }
 
-  /** Smooth the y-axis range. Future is included only once revealing (fairness). */
+  /** Smooth the y-axis to fit the VISIBLE window (zoom/pan rescales it). Future is
+   *  included only once revealing (fairness). */
   update(dt: number, round: Round): void {
+    if (!this.vInited) {
+      this.viewCount = this.ctxLen(round);
+      this.viewStart = 0;
+      this.vInited = true;
+    }
     const revealing = round.phase === 'reveal' || round.phase === 'done';
-    const candles = revealing
-      ? round.puzzle.candles.concat(round.puzzle.future)
-      : round.puzzle.candles;
-    const [lo, hi] = chartPriceRange(candles);
+    const all = revealing ? round.puzzle.candles.concat(round.puzzle.future) : round.puzzle.candles;
+    const ev = this.effectiveView(round);
+    const visible = all.slice(Math.floor(ev.start), Math.ceil(ev.start + ev.count));
+    const [lo, hi] = chartPriceRange(visible.length ? visible : all);
     if (!this.inited) {
       this.curMin = lo;
       this.curMax = hi;
@@ -107,6 +187,7 @@ export class RoundView {
 
     const rect = this.chartRect(vp);
     const showFuture = round.phase === 'reveal' || round.phase === 'done';
+    const ev = this.effectiveView(round);
     drawChart(ctx, rect, {
       context: round.puzzle.candles,
       future: round.puzzle.future,
@@ -117,6 +198,8 @@ export class RoundView {
       freezeClose: round.puzzle.freezeClose,
       showFreezeLine: round.phase !== 'preroll' && round.phase !== 'playback',
       timeframe: round.puzzle.timeframe,
+      viewStart: ev.start,
+      viewCount: ev.count,
     });
 
     if (showFuture) this.drawReveal(ctx, vp, round, combo);
@@ -212,6 +295,9 @@ export class RoundView {
   private drawDecide(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round): void {
     const cx = vp.w / 2;
 
+    // Zoom/pan controls (take your time reading the chart).
+    this.drawControls(ctx, vp);
+
     // Countdown ring.
     const ry = vp.h * 0.64;
     const r = 27;
@@ -297,6 +383,23 @@ export class RoundView {
     if (round.phase === 'done') {
       drawButton(ctx, this.continueButton(vp, round.index >= round.total - 1));
     }
+  }
+
+  private drawControls(ctx: CanvasRenderingContext2D, vp: Viewport): void {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const b of this.controlRects(vp)) {
+      roundRectPath(ctx, b.x, b.y, b.w, b.h, 8);
+      ctx.fillStyle = 'rgba(23,31,58,0.85)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = colors.border;
+      ctx.stroke();
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.bold} ${b.id === 'fit' ? 14 : 18}px ${fonts.family}`;
+      ctx.fillText(b.sym, b.x + b.w / 2, b.y + b.h / 2 + 1);
+    }
+    ctx.textBaseline = 'alphabetic';
   }
 
   private drawCallButton(

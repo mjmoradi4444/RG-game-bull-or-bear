@@ -24,6 +24,10 @@ export interface ChartParams {
   showFreezeLine: boolean;
   /** '5m' | '15m' | '1h' — shown as the interval badge + drives the time axis. */
   timeframe: string;
+  /** Visible window over the slot grid (zoom/pan). Leftmost visible slot. */
+  viewStart?: number;
+  /** Number of slots visible across the plot (zoom). Defaults to all slots. */
+  viewCount?: number;
 }
 
 /** Width reserved on the right for the price scale, and on the bottom for time. */
@@ -65,12 +69,19 @@ export function chartPriceRange(candles: Candle[], pad = 0.1): [number, number] 
 export function drawChart(ctx: CanvasRenderingContext2D, rect: Rect, p: ChartParams): void {
   const plot: Rect = { x: rect.x, y: rect.y, w: rect.w - PRICE_AXIS_W, h: rect.h - TIME_AXIS_H };
   const totalSlots = p.context.length + p.future.length;
-  const slotW = plot.w / totalSlots;
+  // Visible window over the slot grid (zoom = fewer slots; pan = shifted start).
+  const viewCount = Math.max(4, Math.min(p.viewCount ?? totalSlots, totalSlots));
+  const viewStart = clamp(p.viewStart ?? 0, 0, Math.max(0, totalSlots - viewCount));
+  const slotW = plot.w / viewCount;
   const bodyW = Math.max(2, slotW * 0.66);
-  const wickW = Math.max(1, Math.min(1.6, slotW * 0.14));
+  const wickW = Math.max(1, Math.min(1.8, slotW * 0.14));
   const range = Math.max(1e-9, p.priceMax - p.priceMin);
   const yOf = (price: number): number =>
     plot.y + plot.h - clamp((price - p.priceMin) / range, 0, 1) * plot.h;
+  /** Candle-center x for a slot index, accounting for the view window. */
+  const xOf = (slot: number): number => plot.x + (slot - viewStart + 0.5) * slotW;
+  /** Gridline (slot edge) x for the time axis / freeze marker. */
+  const edgeX = (slot: number): number => plot.x + (slot - viewStart) * slotW;
   const dec = priceDecimals(p.freezeClose);
   const axisX = plot.x + plot.w;
 
@@ -96,9 +107,10 @@ export function drawChart(ctx: CanvasRenderingContext2D, rect: Rect, p: ChartPar
   ctx.font = `${fonts.weight.medium} 9px ${fonts.family}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  for (let slot = 0; slot <= totalSlots; slot += 10) {
-    const x = plot.x + slot * slotW;
-    if (x > axisX + 0.5) continue;
+  const tstep = viewCount <= 12 ? 2 : viewCount <= 26 ? 5 : 10;
+  for (let slot = Math.ceil(viewStart / tstep) * tstep; slot <= viewStart + viewCount; slot += tstep) {
+    const x = edgeX(slot);
+    if (x < plot.x - 0.5 || x > axisX + 0.5) continue;
     ctx.strokeStyle = GRID;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -121,21 +133,28 @@ export function drawChart(ctx: CanvasRenderingContext2D, rect: Rect, p: ChartPar
 
   // --- neutral freeze marker (the decision point — "predict from here") ---
   if (p.showFreezeLine) {
-    const fx = plot.x + p.context.length * slotW;
-    ctx.save();
-    ctx.strokeStyle = CROSSHAIR;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 4]);
-    ctx.beginPath();
-    ctx.moveTo(fx, plot.y);
-    ctx.lineTo(fx, plot.y + plot.h);
-    ctx.stroke();
-    ctx.restore();
+    const fx = edgeX(p.context.length);
+    if (fx >= plot.x - 0.5 && fx <= axisX + 0.5) {
+      ctx.save();
+      ctx.strokeStyle = CROSSHAIR;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(fx, plot.y);
+      ctx.lineTo(fx, plot.y + plot.h);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
-  // --- candles ------------------------------------------------------------
+  // --- candles (clipped to the plot so the view window cuts cleanly) -------
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(plot.x, plot.y, plot.w, plot.h);
+  ctx.clip();
   const drawCandle = (c: Candle, slot: number, alpha: number): void => {
-    const cx = plot.x + (slot + 0.5) * slotW;
+    const cx = xOf(slot);
+    if (cx < plot.x - slotW || cx > axisX + slotW) return; // cull off-window
     const col = c.c >= c.o ? CHART_UP : CHART_DOWN;
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = col;
@@ -161,6 +180,7 @@ export function drawChart(ctx: CanvasRenderingContext2D, rect: Rect, p: ChartPar
   for (let i = 0; i < nFut; i++) drawCandle(p.future[i]!, base + i, 1);
   const futFrac = p.futureShown - nFut;
   if (nFut < p.future.length && futFrac > 0.01) drawCandle(p.future[nFut]!, base + nFut, futFrac);
+  ctx.restore(); // end candle clip
 
   // --- current-price line + tag (always on, like a real terminal) ---------
   let lastPrice = p.freezeClose;
