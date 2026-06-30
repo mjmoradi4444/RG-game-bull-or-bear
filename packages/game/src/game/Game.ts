@@ -10,6 +10,7 @@ import { PuzzleBank } from './PuzzleBank';
 import { Match } from './Match';
 import type { Round } from './Round';
 import { type Challenge, challengeUrl, decodeChallenge, makeSeed } from './Challenge';
+import { DEFAULT_LEVEL, LEVELS, type Level, levelById } from './levels';
 import { accuracyPct } from './scoring';
 import { Title } from '../ui/Title';
 import { RoundView } from '../ui/RoundView';
@@ -49,6 +50,10 @@ export class Game {
   // Async duel (SPEC §4): the seed both players share + the incoming challenger.
   private matchSeed = 0;
   private opponent: Challenge | null = null;
+
+  // Difficulty level (SPEC §5): chosen before a match; weights the score.
+  private level: Level = DEFAULT_LEVEL;
+  private pendingMode: Mode = 'practice';
 
   constructor(
     private readonly vp: Viewport,
@@ -119,14 +124,18 @@ export class Game {
   /** Resolve an incoming challenge deep-link. Call once after the adapter is ready. */
   handleStartParam(): void {
     this.opponent = decodeChallenge(this.adapter.getStartParam());
-    if (this.opponent) this.mode = 'challenge';
+    if (this.opponent) {
+      this.mode = 'challenge';
+      this.level = levelById(this.opponent.level); // play the challenger's level
+    }
   }
 
-  private startMatch(mode: Mode): void {
+  private startMatch(mode: Mode, level: Level): void {
     this.mode = mode;
-    // Challenge mode replays the opponent's seed (same 4 puzzles); otherwise fresh.
+    this.level = level;
+    // Challenge mode replays the opponent's seed + level (same puzzles); else fresh.
     this.matchSeed = mode === 'challenge' && this.opponent ? this.opponent.seed : makeSeed();
-    this.match = new Match(this.bank.pick(CONFIG.ROUNDS, new Rng(this.matchSeed)));
+    this.match = new Match(this.bank.pick(CONFIG.ROUNDS, new Rng(this.matchSeed), level.difficulty));
     this.roundView.reset();
     this.combo = 0;
     this.bestCombo = 0;
@@ -137,7 +146,9 @@ export class Game {
   }
 
   private finishMatch(): void {
-    if (this.match) void this.adapter.submitScore(this.match.correctCount);
+    // Leaderboard score is difficulty-weighted: a correct call is worth more on a
+    // harder level (SPEC §5), so the global board rewards skill and spreads out.
+    if (this.match) void this.adapter.submitScore(this.match.correctCount * this.level.weight);
     this.screen = 'result';
   }
 
@@ -165,6 +176,9 @@ export class Game {
       case 'title':
         this.onTapTitle(px, py);
         break;
+      case 'levelSelect':
+        this.onTapLevelSelect(px, py);
+        break;
       case 'round':
         this.onTapRound(px, py);
         break;
@@ -184,9 +198,34 @@ export class Game {
     const id = hitButton(this.title.buttons(this.vp), px, py);
     if (!id) return;
     this.audio.coin();
-    if (id === 'challenge') this.startMatch('challenge');
-    else if (id === 'practice') this.startMatch('practice');
-    else if (id === 'leaderboard') this.enterLeaderboard();
+    if (id === 'leaderboard') {
+      this.enterLeaderboard();
+    } else if (id === 'challenge' || id === 'practice') {
+      // An incoming challenge fixes the level (must match the challenger); otherwise
+      // let the player pick a level first.
+      if (id === 'challenge' && this.opponent) {
+        this.startMatch('challenge', this.level);
+      } else {
+        this.pendingMode = id;
+        this.screen = 'levelSelect';
+      }
+    }
+  }
+
+  private onTapLevelSelect(px: number, py: number): void {
+    if (hitButton(this.backButtons(), px, py) === 'back') {
+      this.audio.coin();
+      this.screen = 'title';
+      return;
+    }
+    for (const lv of LEVELS) {
+      const r = this.levelCardRect(lv);
+      if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
+        this.audio.coin();
+        this.startMatch(this.pendingMode, lv);
+        return;
+      }
+    }
   }
 
   private onTapRound(px: number, py: number): void {
@@ -236,7 +275,7 @@ export class Game {
       this.adapter.openLink(SIGNUP_URL);
     } else if (id === 'rematch') {
       if (this.mode === 'challenge') this.opponent = null; // a fresh challenge to send
-      this.startMatch(this.mode);
+      this.startMatch(this.mode, this.level);
     } else if (id === 'leaderboard') {
       this.enterLeaderboard();
     } else if (id === 'share') {
@@ -253,7 +292,7 @@ export class Game {
       const me = this.adapter.getUser()?.name ?? 'You';
       this.adapter.share(
         COPY.challengeMsg(correct, total),
-        challengeUrl({ seed: this.matchSeed, score: correct, name: me }),
+        challengeUrl({ seed: this.matchSeed, score: correct, name: me, level: this.level.id }),
       );
     } else {
       this.adapter.share();
@@ -266,6 +305,16 @@ export class Game {
     const bw = Math.min(w * 0.5, 220);
     const bh = 48;
     return [{ id: 'back', x: w / 2 - bw / 2, y: h * 0.86, w: bw, h: bh, label: COPY.back, kind: 'gold' }];
+  }
+
+  private levelCardRect(level: Level): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    const cw = Math.min(w * 0.84, 360);
+    const ch = 84;
+    const gap = 16;
+    const idx = LEVELS.indexOf(level);
+    const startY = h * 0.3;
+    return { x: w / 2 - cw / 2, y: startY + idx * (ch + gap), w: cw, h: ch };
   }
 
   private resultButtons(): Button[] {
@@ -299,13 +348,14 @@ export class Game {
     this.renderBackground();
 
     if (this.screen === 'title') this.title.render(ctx, this.vp, this.pulse);
+    else if (this.screen === 'levelSelect') this.renderLevelSelect();
     else if (this.screen === 'round' && this.match) {
       ctx.save();
       if (this.shake > 0) {
         const m = 7 * this.shake;
         ctx.translate((Math.random() * 2 - 1) * m, (Math.random() * 2 - 1) * m);
       }
-      this.roundView.render(ctx, this.vp, this.match.round, this.match.statuses(), this.combo);
+      this.roundView.render(ctx, this.vp, this.match.round, this.match.statuses(), this.combo, this.level);
       ctx.restore();
     } else if (this.screen === 'result') this.renderResult();
     else if (this.screen === 'leaderboard') this.renderLeaderboard();
@@ -341,6 +391,63 @@ export class Game {
     }
   }
 
+  private renderLevelSelect(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.075, 30)}px ${fonts.family}`;
+    ctx.fillText(COPY.chooseLevel, cx, h * 0.2);
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+    ctx.fillText(COPY.chooseLevelHint, cx, h * 0.2 + 24);
+
+    for (const lv of LEVELS) {
+      const r = this.levelCardRect(lv);
+      roundRectPath(ctx, r.x, r.y, r.w, r.h, 16);
+      ctx.fillStyle = 'rgba(23,31,58,0.7)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = colors.border;
+      ctx.stroke();
+      // Left accent bar in the level color.
+      ctx.save();
+      roundRectPath(ctx, r.x, r.y, r.w, r.h, 16);
+      ctx.clip();
+      ctx.fillStyle = lv.color;
+      ctx.fillRect(r.x, r.y, 5, r.h);
+      ctx.restore();
+
+      const px = r.x + 22;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = lv.color;
+      ctx.font = `${fonts.weight.black} 22px ${fonts.family}`;
+      ctx.fillText(lv.name, px, r.y + 34);
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+      ctx.fillText(lv.tagline, px, r.y + 57);
+
+      // Difficulty dots (filled = level weight) bottom-right.
+      const dotsY = r.y + r.h - 18;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(r.x + r.w - 22 - (2 - i) * 14, dotsY, 4, 0, Math.PI * 2);
+        ctx.fillStyle = i < lv.weight ? lv.color : 'rgba(138,148,166,0.3)';
+        ctx.fill();
+      }
+      // Points-per-correct badge top-right.
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
+      ctx.fillText(COPY.ptsPerCorrect(lv.weight), r.x + r.w - 18, r.y + 30);
+    }
+
+    for (const b of this.backButtons()) drawButton(ctx, b);
+    ctx.textAlign = 'left';
+  }
+
   private renderResult(): void {
     const { ctx, w, h } = this.vp;
     const cx = w / 2;
@@ -353,6 +460,11 @@ export class Game {
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
     ctx.fillText(COPY.matchResult.toUpperCase(), cx, h * 0.16);
+
+    // Level badge (which difficulty this run was).
+    ctx.fillStyle = this.level.color;
+    ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+    ctx.fillText(`${this.level.name.toUpperCase()} · ${this.level.weight}× pts`, cx, h * 0.16 + 22);
 
     ctx.fillStyle = colors.text;
     ctx.font = `${fonts.weight.black} ${Math.min(w * 0.2, 84)}px ${fonts.family}`;

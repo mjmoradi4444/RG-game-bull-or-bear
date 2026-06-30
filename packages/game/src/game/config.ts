@@ -8,14 +8,16 @@ export const CONFIG = {
   CONTEXT_CANDLES: 30,
   /** Candles into the future the outcome is measured at (skill horizon, not next tick). */
   HORIZON_H: 10,
-  /** Seconds on the decision timer once the chart freezes. */
-  DECISION_SECONDS: 8,
+  /** Seconds on the decision timer once the chart freezes. 15s: real analysis
+   *  (zoom/pan + reading structure) takes time; this isn't a reflex game. */
+  DECISION_SECONDS: 15,
   /** Playback duration for streaming the context candles in. */
   PLAYBACK_MS: 4000,
   /** Reveal duration for animating the real future candles. */
   REVEAL_MS: 3000,
-  /** Rounds per match. 10 so a leaderboard score spreads out and feels earned. */
-  ROUNDS: 10,
+  /** Rounds per match. 5 keeps a match short with 15s thinking time + a teaching
+   *  reveal each round; leaderboard spread comes from difficulty-weighted scoring. */
+  ROUNDS: 5,
   /** Sudden-death extra round on a tie. */
   TIEBREAKER: true,
 } as const;

@@ -18,6 +18,11 @@ export const COPY = {
   practice: 'Quick Play',
   leaderboard: 'Leaderboard',
 
+  // Level select (SPEC §5 — difficulty tiers)
+  chooseLevel: 'Choose your level',
+  chooseLevelHint: 'Harder levels score more per correct call.',
+  ptsPerCorrect: (w: number): string => `+${w} per correct`,
+
   // Round flow
   roundOf: (n: number, total: number): string => `Round ${n} / ${total}`,
   callIt: 'CALL IT',

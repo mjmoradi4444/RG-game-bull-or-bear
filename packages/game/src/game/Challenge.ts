@@ -7,14 +7,18 @@
  * declare a winner. v1 carries the challenger's count in the link; the bot's
  * server-side scoring (validating the actual calls) lands in Phase 6.
  */
+import type { LevelId } from './levels';
+
 export interface Challenge {
   seed: number;
   score: number; // challenger's correct count
   name: string; // challenger display name
+  level: LevelId; // the level both players share (same difficulty → same puzzles)
 }
 
 const PREFIX = 'duel_';
 const MAX_NAME = 18;
+const LEVELS: readonly LevelId[] = ['retail', 'pro', 'whale'];
 
 export function makeSeed(): number {
   return (Math.floor(Math.random() * 0xffffffff) >>> 0) || 1;
@@ -31,11 +35,12 @@ function b64urlDecode(s: string): string {
   return decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
 }
 
-/** Encode a challenge as `duel_<token>` for the deep link. */
+/** Encode a challenge as `duel_<token>` for the deep link. Layout: seed|score|level|name
+ *  (level before name so a name containing '|' stays unambiguous). */
 export function encodeChallenge(c: Challenge): string {
   const name = c.name.slice(0, MAX_NAME);
   const score = Math.max(0, Math.min(99, Math.round(c.score)));
-  return PREFIX + b64urlEncode(`${c.seed >>> 0}|${score}|${name}`);
+  return PREFIX + b64urlEncode(`${c.seed >>> 0}|${score}|${c.level}|${name}`);
 }
 
 /** Decode a start param into a Challenge, or null if it isn't a valid duel link. */
@@ -43,13 +48,17 @@ export function decodeChallenge(startParam: string | null): Challenge | null {
   if (!startParam || !startParam.startsWith(PREFIX)) return null;
   try {
     const raw = b64urlDecode(startParam.slice(PREFIX.length));
-    const [seedS, scoreS, ...nameParts] = raw.split('|');
+    const [seedS, scoreS, levelS, ...nameParts] = raw.split('|');
     const seed = Number(seedS) >>> 0;
     if (!Number.isFinite(seed) || seed === 0) return null;
+    const level = (LEVELS as readonly string[]).includes(levelS ?? '')
+      ? (levelS as LevelId)
+      : 'pro';
     return {
       seed,
       score: Math.max(0, Math.min(99, Number(scoreS) || 0)),
       name: (nameParts.join('|') || 'A friend').slice(0, MAX_NAME),
+      level,
     };
   } catch {
     return null;

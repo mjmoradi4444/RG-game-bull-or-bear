@@ -1,6 +1,7 @@
 import type { Viewport } from '../engine/Viewport';
 import type { Round } from '../game/Round';
 import type { RoundStatus } from '../game/Match';
+import type { Level } from '../game/levels';
 import { colors, fonts } from '../brand/tokens';
 import { COPY, assetLabel } from '../brand/copy';
 import { CONFIG } from '../game/config';
@@ -99,8 +100,9 @@ export class RoundView {
     round: Round,
     statuses: RoundStatus[],
     combo = 0,
+    level?: Level,
   ): void {
-    this.drawHeader(ctx, vp, round, statuses);
+    this.drawHeader(ctx, vp, round, statuses, level);
 
     const rect = this.chartRect(vp);
     const showFuture = round.phase === 'reveal' || round.phase === 'done';
@@ -130,8 +132,28 @@ export class RoundView {
     vp: Viewport,
     round: Round,
     statuses: RoundStatus[],
+    level?: Level,
   ): void {
     const cx = vp.w / 2;
+
+    // Level chip, top-left.
+    if (level) {
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = `${fonts.weight.bold} 11px ${fonts.family}`;
+      const label = level.name.toUpperCase();
+      const cw = ctx.measureText(label).width + 22;
+      roundRectPath(ctx, 12, vp.h * 0.05 - 11, cw, 22, 11);
+      ctx.fillStyle = 'rgba(23,31,58,0.8)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(12 + 11, vp.h * 0.05, 3.5, 0, TAU);
+      ctx.fillStyle = level.color;
+      ctx.fill();
+      ctx.fillStyle = colors.text;
+      ctx.fillText(label, 12 + 19, vp.h * 0.05 + 0.5);
+      ctx.textBaseline = 'alphabetic';
+    }
     // Tally pips.
     const n = statuses.length;
     const pipR = 4;

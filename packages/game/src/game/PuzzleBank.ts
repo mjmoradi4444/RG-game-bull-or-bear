@@ -54,10 +54,13 @@ export class PuzzleBank {
 
   /**
    * Pick `n` puzzles, preferring distinct assets first (variety per SPEC §3.4),
-   * then filling the remainder. Deterministic for a given seeded Rng.
+   * then filling the remainder. Deterministic for a given seeded Rng. An optional
+   * difficulty restricts the pool to one level's tier (each tier is itself 50/50,
+   * so the match stays fair).
    */
-  pick(n: number, rng: Rng): Puzzle[] {
-    const pool = this.all.slice();
+  pick(n: number, rng: Rng, difficulty?: 'easy' | 'med' | 'hard'): Puzzle[] {
+    const base = difficulty ? this.all.filter((p) => p.difficulty === difficulty) : this.all;
+    const pool = (base.length >= n ? base : this.all).slice();
     for (let i = pool.length - 1; i > 0; i--) {
       const j = rng.int(0, i);
       [pool[i], pool[j]] = [pool[j]!, pool[i]!];
