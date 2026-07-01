@@ -1,6 +1,7 @@
 import puzzlesData from '../data/puzzles.json';
 import type { Rng } from '../engine/Rng';
 import type { Candle, Outcome, Puzzle, Source, Timeframe } from './Puzzle';
+import { patternKey } from './priceAction';
 
 /**
  * The compact on-disk shape emitted by data-pipeline (numeric tuples, no keys, to
@@ -53,10 +54,11 @@ export class PuzzleBank {
   }
 
   /**
-   * Pick `n` puzzles, preferring distinct assets first (variety per SPEC §3.4),
-   * then filling the remainder. Deterministic for a given seeded Rng. An optional
-   * difficulty restricts the pool to one level's tier (each tier is itself 50/50,
-   * so the match stays fair).
+   * Pick `n` puzzles, spreading them across price-action PATTERNS first (so the
+   * teaching varies round to round, not all "trend continuation"), then distinct
+   * assets, then filling the remainder. Deterministic for a given seeded Rng. An
+   * optional difficulty restricts the pool to one level's tier (each tier is itself
+   * 50/50, so the match stays fair).
    */
   pick(n: number, rng: Rng, difficulty?: 'easy' | 'med' | 'hard'): Puzzle[] {
     const base = difficulty ? this.all.filter((p) => p.difficulty === difficulty) : this.all;
@@ -67,13 +69,25 @@ export class PuzzleBank {
     }
 
     const chosen: Puzzle[] = [];
+    const usedPatterns = new Set<string>();
     const usedAssets = new Set<string>();
+    // 1) one of each distinct pattern (the fix for pattern imbalance)
     for (const p of pool) {
       if (chosen.length >= n) break;
-      if (usedAssets.has(p.asset)) continue;
+      const key = patternKey(p);
+      if (usedPatterns.has(key)) continue;
+      chosen.push(p);
+      usedPatterns.add(key);
+      usedAssets.add(p.asset);
+    }
+    // 2) then broaden asset variety
+    for (const p of pool) {
+      if (chosen.length >= n) break;
+      if (chosen.includes(p) || usedAssets.has(p.asset)) continue;
       chosen.push(p);
       usedAssets.add(p.asset);
     }
+    // 3) fill any remaining
     for (const p of pool) {
       if (chosen.length >= n) break;
       if (!chosen.includes(p)) chosen.push(p);
