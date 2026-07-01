@@ -31,7 +31,7 @@ export interface ChartParams {
 }
 
 /** Width reserved on the right for the price scale, and on the bottom for time. */
-const PRICE_AXIS_W = 54;
+export const PRICE_AXIS_W = 54;
 const TIME_AXIS_H = 16;
 const TF_MIN: Record<string, number> = { '5m': 5, '15m': 15, '1h': 60 };
 

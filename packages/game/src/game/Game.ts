@@ -68,6 +68,7 @@ export class Game {
     this.bgScroll += dt * 16;
     this.shake = Math.max(0, this.shake - dt);
     if (this.input.consumeFire()) this.onTap();
+    const gesture = this.input.takeGesture(); // drained every tick to avoid buildup
     this.particles.update(dt);
 
     if (this.screen === 'round' && this.match) {
@@ -75,6 +76,11 @@ export class Game {
       if (r.index !== this.lastRoundIndex) {
         this.lastRoundIndex = r.index;
         this.verdictFired = false;
+      }
+      // Pinch/drag/wheel chart navigation during the decision window.
+      if (r.phase === 'decide') {
+        if (gesture.zoomFactor !== 1) this.roundView.zoomBy(gesture.zoomFactor, r);
+        if (gesture.panDx !== 0) this.roundView.panByPixels(gesture.panDx, this.vp, r);
       }
       r.update(dt);
       this.roundView.update(dt, r);
@@ -146,9 +152,13 @@ export class Game {
   }
 
   private finishMatch(): void {
-    // Leaderboard score is difficulty-weighted: a correct call is worth more on a
-    // harder level (SPEC §5), so the global board rewards skill and spreads out.
-    if (this.match) void this.adapter.submitScore(this.match.correctCount * this.level.weight);
+    // Quick Play feeds the GLOBAL leaderboard (difficulty-weighted: a correct call is
+    // worth more on a harder level — SPEC §5). A challenge is a PRIVATE head-to-head
+    // between the two friends (compared via the shared link), so it does NOT post to
+    // the global board.
+    if (this.match && this.mode === 'practice') {
+      void this.adapter.submitScore(this.match.correctCount * this.level.weight);
+    }
     this.screen = 'result';
   }
 
@@ -234,12 +244,6 @@ export class Game {
     const r = m.round;
 
     if (r.phase === 'decide') {
-      const ctrl = this.roundView.hitControl(this.vp, px, py);
-      if (ctrl) {
-        this.roundView.applyControl(ctrl, r);
-        this.audio.coin();
-        return;
-      }
       const inside = (rect: { x: number; y: number; w: number; h: number }): boolean =>
         px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
       if (inside(this.roundView.buyRect(this.vp))) this.lockCall('up');

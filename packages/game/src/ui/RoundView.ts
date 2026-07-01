@@ -10,7 +10,7 @@ import { clamp, damp, easeOutCubic, TAU } from '../engine/math';
 import { wrapText } from './text';
 import { roundRectPath } from './glass';
 import { type Button, drawButton } from './Button';
-import { chartPriceRange, drawChart, type Rect } from './Chart';
+import { chartPriceRange, drawChart, PRICE_AXIS_W, type Rect } from './Chart';
 import { type ChipRect, drawVerifyChip, hitChip } from './VerifyChip';
 
 /**
@@ -58,53 +58,23 @@ export class RoundView {
     return { start: 0, count: ctxLen };
   }
 
-  /** Apply a control-bar action by id. */
-  applyControl(id: string, round: Round): void {
+  /** Pinch / wheel zoom. factor > 1 = zoom IN (fewer, bigger candles). */
+  zoomBy(factor: number, round: Round): void {
+    if (round.phase !== 'decide') return;
     const ctxLen = this.ctxLen(round);
-    if (id === 'fit') {
-      this.viewCount = ctxLen;
-      this.viewStart = 0;
-      return;
-    }
-    if (id === 'zoomIn' || id === 'zoomOut') {
-      const center = this.viewStart + this.viewCount / 2;
-      this.viewCount = clamp(this.viewCount * (id === 'zoomIn' ? 1 / 1.5 : 1.5), MIN_VIEW, ctxLen);
-      this.viewStart = clamp(center - this.viewCount / 2, 0, ctxLen - this.viewCount);
-      return;
-    }
-    if (id === 'panLeft' || id === 'panRight') {
-      const step = Math.max(1, Math.round(this.viewCount * 0.4));
-      this.viewStart = clamp(
-        this.viewStart + (id === 'panRight' ? step : -step),
-        0,
-        ctxLen - this.viewCount,
-      );
-    }
+    const center = this.viewStart + this.viewCount / 2;
+    this.viewCount = clamp(this.viewCount / factor, MIN_VIEW, ctxLen);
+    this.viewStart = clamp(center - this.viewCount / 2, 0, ctxLen - this.viewCount);
   }
 
-  /** The control-bar buttons (decide phase). */
-  controlRects(vp: Viewport): Array<{ id: string; sym: string; x: number; y: number; w: number; h: number }> {
-    const ids: Array<[string, string]> = [
-      ['panLeft', '‹'],
-      ['zoomOut', '−'],
-      ['fit', '⤢'],
-      ['zoomIn', '+'],
-      ['panRight', '›'],
-    ];
-    const bw = 40;
-    const bh = 28;
-    const gap = 8;
-    const totalW = ids.length * bw + (ids.length - 1) * gap;
-    const x0 = vp.w / 2 - totalW / 2;
-    const y = this.chartRect(vp).y + this.chartRect(vp).h + 8;
-    return ids.map(([id, sym], i) => ({ id, sym, x: x0 + i * (bw + gap), y, w: bw, h: bh }));
-  }
-
-  hitControl(vp: Viewport, px: number, py: number): string | null {
-    for (const b of this.controlRects(vp)) {
-      if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) return b.id;
-    }
-    return null;
+  /** One-finger drag pan (px). Dragging right reveals earlier candles. */
+  panByPixels(dxPx: number, vp: Viewport, round: Round): void {
+    if (round.phase !== 'decide') return;
+    const ctxLen = this.ctxLen(round);
+    const count = clamp(this.viewCount || ctxLen, MIN_VIEW, ctxLen);
+    const plotW = Math.max(1, this.chartRect(vp).w - PRICE_AXIS_W);
+    const slotW = plotW / count;
+    this.viewStart = clamp(this.viewStart - dxPx / slotW, 0, ctxLen - count);
   }
 
   toggleVerify(): void {
@@ -295,8 +265,11 @@ export class RoundView {
   private drawDecide(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round): void {
     const cx = vp.w / 2;
 
-    // Zoom/pan controls (take your time reading the chart).
-    this.drawControls(ctx, vp);
+    // Gesture hint (pinch/drag replaces buttons — mobile-first).
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(138,148,166,0.6)';
+    ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
+    ctx.fillText('pinch to zoom · drag to pan', cx, this.chartRect(vp).y + this.chartRect(vp).h + 13);
 
     // Countdown ring.
     const ry = vp.h * 0.64;
@@ -383,23 +356,6 @@ export class RoundView {
     if (round.phase === 'done') {
       drawButton(ctx, this.continueButton(vp, round.index >= round.total - 1));
     }
-  }
-
-  private drawControls(ctx: CanvasRenderingContext2D, vp: Viewport): void {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (const b of this.controlRects(vp)) {
-      roundRectPath(ctx, b.x, b.y, b.w, b.h, 8);
-      ctx.fillStyle = 'rgba(23,31,58,0.85)';
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = colors.border;
-      ctx.stroke();
-      ctx.fillStyle = colors.textMuted;
-      ctx.font = `${fonts.weight.bold} ${b.id === 'fit' ? 14 : 18}px ${fonts.family}`;
-      ctx.fillText(b.sym, b.x + b.w / 2, b.y + b.h / 2 + 1);
-    }
-    ctx.textBaseline = 'alphabetic';
   }
 
   private drawCallButton(
