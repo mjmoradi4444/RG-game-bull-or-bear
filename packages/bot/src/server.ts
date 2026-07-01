@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config';
 import { bot } from './bot';
 import { clampScore, rateLimit, verifyContext } from './security';
-import { fetchHighScores, submitGameScore } from './telegram';
+import { submitGameScore } from './telegram';
+import { recordScore, topScores } from './leaderboard';
+
+// Signed launch tokens are accepted for 30 min (one match + browsing), not 24h —
+// tightens the replay window since the token rides in the game URL fragment.
+const SCORE_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Minimal HTTP API the frontend calls (SPEC §5.2):
@@ -83,18 +88,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (req.method === 'POST' && url.pathname === '/score') {
     const data = JSON.parse((await readBody(req)) || '{}') as { gctx?: string; score?: number };
-    const ctx = verifyContext(String(data.gctx ?? ''));
+    const ctx = verifyContext(String(data.gctx ?? ''), SCORE_TTL_MS);
     if (!ctx) return send(res, 401, { ok: false, error: 'bad_context' });
     if (!rateLimit(ctx.u)) return send(res, 429, { ok: false, error: 'rate_limited' });
     const score = clampScore(data.score);
-    await submitGameScore(bot.api, ctx, score);
-    return send(res, 200, { ok: true, score });
+    const best = recordScore(ctx.u, ctx.n ?? 'Player', score);
+    // Native Telegram in-chat score too, best-effort (ignore MESSAGE_ID_INVALID on stale msgs).
+    void submitGameScore(bot.api, ctx, score).catch((e) =>
+      console.warn('[score] setGameScore skipped:', e instanceof Error ? e.message : e),
+    );
+    return send(res, 200, { ok: true, score: best });
   }
 
   if (req.method === 'GET' && url.pathname === '/highscores') {
-    const ctx = verifyContext(url.searchParams.get('gctx') ?? '');
+    const ctx = verifyContext(url.searchParams.get('gctx') ?? '', SCORE_TTL_MS);
     if (!ctx) return send(res, 401, { ok: false, error: 'bad_context' });
-    const scores = await fetchHighScores(bot.api, ctx);
+    const scores = topScores().map((e, i) => ({ rank: i + 1, name: e.name, score: e.score, isSelf: e.u === ctx.u }));
     return send(res, 200, { ok: true, scores });
   }
 

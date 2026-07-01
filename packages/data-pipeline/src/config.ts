@@ -2,24 +2,31 @@ import type { Timeframe } from './types';
 
 /** Slicing + curation params. CONTEXT/HORIZON mirror the game's config.ts. */
 export const PARAMS = {
-  CONTEXT: 30,
+  /** Real candles stored per clip. 100 so the player can zoom out / pan back and see
+   *  genuine history (the default view shows only the recent ~25). */
+  CONTEXT: 100,
   HORIZON: 10,
-  /** Candles between clip starts. = CONTEXT → each clip's context window is fresh. */
-  STRIDE: 30,
+  /** Candles between clip starts. Large enough that 100-candle windows don't overlap
+   *  into near-duplicates. */
+  STRIDE: 60,
+  /** Recent window (candles before the freeze) used for the trend/ranging judgment,
+   *  independent of how much history we STORE — keeps difficulty about the setup
+   *  leading into the decision, not the whole 100-candle backdrop. */
+  ER_WINDOW: 30,
   /** Degenerate filter: keep a clip only if |move| ≥ ATR_K × context ATR. */
   ATR_K: 0.6,
   /** Ranging filter: drop clips whose context efficiency ratio is below this — no
    *  readable trend means a call is luck, not skill (SPEC §3.3/§3.4). Calibrated to
    *  the real ER distribution (intraday is noisy; median ER ≈ 0.17), this drops the
    *  choppiest ~half. */
-  ER_MIN_TREND: 0.18,
+  ER_MIN_TREND: 0.11,
   /** Difficulty by trend clarity (efficiency ratio): a clean strong trend is easy to
    *  read; a faint one is hard. Tiers: easy ≥ ER_EASY, med ≥ ER_MED, else hard. */
   ER_EASY: 0.36,
   ER_MED: 0.25,
   /** Max balanced clips kept per (asset × difficulty) so every level stays 50/50 per
    *  asset and no single asset dominates a tier. */
-  PER_GROUP_CAP: 40,
+  PER_GROUP_CAP: 24,
   TARGET_MIN: 350,
 } as const;
 
@@ -47,7 +54,7 @@ export const ASSETS: AssetSpec[] = [
 ];
 
 /** Binance candles to pull per (symbol, timeframe). */
-export const BINANCE_CANDLES = 4000;
+export const BINANCE_CANDLES = 12000;
 
 /** Dukascopy history window (real past data; today is ~2026-06). ~5 months gives the
  *  FX/Gold/Oil assets enough clips to clear the dataset target with margin and adds

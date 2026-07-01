@@ -9,6 +9,7 @@ import { config } from './config';
  */
 export interface GameContext {
   u: number; // user id
+  n?: string; // display name (from Telegram at launch) — for the leaderboard
   c?: number; // chat id
   m?: number; // message id
   i?: string; // inline_message_id

@@ -28,6 +28,10 @@ export function curate(
 
   const notDegenerate = allClips.filter((c) => c.atr > 0 && c.absMove >= PARAMS.ATR_K * c.atr);
   const filtered = notDegenerate.filter((c) => c.er >= PARAMS.ER_MIN_TREND);
+  // Set the difficulty terciles from this run's trending set (balanced level sizes).
+  const ers = filtered.map((c) => c.er).sort((a, b) => a - b);
+  erMedQ = ers[Math.floor(ers.length / 3)] ?? PARAMS.ER_MED;
+  erEasyQ = ers[Math.floor((2 * ers.length) / 3)] ?? PARAMS.ER_EASY;
 
   // Group by asset × difficulty so we can balance 50/50 WITHIN each level — that way
   // every difficulty is directionally unbiased per asset (no "always follow the
@@ -70,10 +74,15 @@ export function curate(
   };
 }
 
-/** Grade by trend clarity: a clean, strong trend is easy to read; a faint one hard. */
+// ER tercile thresholds, set from the actual trending set in curate() so the three
+// difficulty levels come out ~balanced in size regardless of the raw ER distribution.
+let erMedQ: number = PARAMS.ER_MED;
+let erEasyQ: number = PARAMS.ER_EASY;
+
+/** Grade by trend clarity (quantile terciles): clearest trend = easy, faintest = hard. */
 function difficulty(c: RawClip): 'easy' | 'med' | 'hard' {
-  if (c.er >= PARAMS.ER_EASY) return 'easy';
-  if (c.er >= PARAMS.ER_MED) return 'med';
+  if (c.er >= erEasyQ) return 'easy';
+  if (c.er >= erMedQ) return 'med';
   return 'hard';
 }
 

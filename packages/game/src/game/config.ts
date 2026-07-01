@@ -4,8 +4,11 @@
  * offline data-pipeline so curation thresholds stay in sync with play.
  */
 export const CONFIG = {
-  /** Lead-up candles visible before the freeze (enough context to read trend). */
-  CONTEXT_CANDLES: 30,
+  /** Real candles stored per clip. 100 so the player can zoom out / pan back into
+   *  genuine history; the chart defaults to showing the most recent DEFAULT_VIEW. */
+  CONTEXT_CANDLES: 100,
+  /** Candles shown by default before the freeze (zoom-out/pan reveals the rest). */
+  DEFAULT_VIEW: 25,
   /** Candles into the future the outcome is measured at (skill horizon, not next tick). */
   HORIZON_H: 10,
   /** Seconds on the decision timer once the chart freezes. 15s: real analysis

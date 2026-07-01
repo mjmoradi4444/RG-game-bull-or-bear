@@ -49,13 +49,22 @@ export class RoundView {
   /** Visible window per phase: user-controlled during decide; fit-all otherwise. */
   private effectiveView(round: Round): { start: number; count: number } {
     const ctxLen = this.ctxLen(round);
-    const total = ctxLen + round.puzzle.future.length;
+    const futLen = round.puzzle.future.length;
+    const dv = Math.min(CONFIG.DEFAULT_VIEW, ctxLen);
     if (round.phase === 'decide') {
-      const count = clamp(this.viewCount || ctxLen, MIN_VIEW, ctxLen);
+      const count = clamp(this.viewCount || dv, MIN_VIEW, ctxLen);
       return { start: clamp(this.viewStart, 0, ctxLen - count), count };
     }
-    if (round.phase === 'reveal' || round.phase === 'done') return { start: 0, count: total };
-    return { start: 0, count: ctxLen };
+    if (round.phase === 'reveal' || round.phase === 'done') {
+      // Recent context + the revealed future — not all 100 candles crammed in.
+      return { start: ctxLen - dv, count: dv + futLen };
+    }
+    if (round.phase === 'playback') {
+      // Live-scroll: the window follows the newest streamed candle (last dv shown).
+      const shown = round.playbackFrac * ctxLen;
+      return { start: clamp(shown - dv, 0, ctxLen - dv), count: dv };
+    }
+    return { start: ctxLen - dv, count: dv }; // preroll
   }
 
   /** Pinch / wheel zoom. factor > 1 = zoom IN (fewer, bigger candles). */
@@ -89,8 +98,9 @@ export class RoundView {
    *  included only once revealing (fairness). */
   update(dt: number, round: Round): void {
     if (!this.vInited) {
-      this.viewCount = this.ctxLen(round);
-      this.viewStart = 0;
+      const dv = Math.min(CONFIG.DEFAULT_VIEW, this.ctxLen(round));
+      this.viewCount = dv;
+      this.viewStart = this.ctxLen(round) - dv; // recent window, ending at the freeze
       this.vInited = true;
     }
     const revealing = round.phase === 'reveal' || round.phase === 'done';

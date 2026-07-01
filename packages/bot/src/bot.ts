@@ -29,8 +29,12 @@ bot.on('callback_query:game_short_name', async (ctx) => {
     return;
   }
   // Tie this launch to the real user + message so /score can be verified later.
+  console.log(
+    `[launch] u=${ctx.from.id} chat=${q.message?.chat.id ?? '-'} msg=${q.message?.message_id ?? '-'} inline=${q.inline_message_id ?? '-'}`,
+  );
   const token = signContext({
     u: ctx.from.id,
+    n: ctx.from.first_name,
     c: q.message?.chat.id,
     m: q.message?.message_id,
     i: q.inline_message_id,
