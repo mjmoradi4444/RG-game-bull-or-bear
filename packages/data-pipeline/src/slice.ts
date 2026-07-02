@@ -39,7 +39,7 @@ export function sliceSeries(
       deltaPct: ((finalClose - freezeClose) / freezeClose) * 100,
       absMove,
       atr: computeATR(context),
-      er: efficiencyRatio(context),
+      er: efficiencyRatio(context.slice(-PARAMS.ER_WINDOW)),
     });
   }
   return clips;

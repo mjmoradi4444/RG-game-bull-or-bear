@@ -103,12 +103,25 @@ export function drawChart(ctx: CanvasRenderingContext2D, rect: Rect, p: ChartPar
     ctx.fillText(fmtPrice(t, dec), axisX + 7, y);
   }
 
-  // --- time axis (relative; absolute dates stay hidden) ------------------
+  // --- time axis (relative to the freeze; absolute dates hidden §3.5) -----
+  // Ticks sit on round time boundaries (…, 6h, 12h) anchored to "now" (the freeze),
+  // in ONE consistent unit — so the axis reads like real elapsed time, not a jumble.
   ctx.font = `${fonts.weight.medium} 9px ${fonts.family}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  const tstep = viewCount <= 12 ? 2 : viewCount <= 26 ? 5 : 10;
-  for (let slot = Math.ceil(viewStart / tstep) * tstep; slot <= viewStart + viewCount; slot += tstep) {
+  const tfMin = TF_MIN[p.timeframe] ?? 60;
+  const spanMin = viewCount * tfMin;
+  const NICE = [15, 30, 60, 120, 240, 360, 720, 1440, 2880, 5760, 11520];
+  const interval =
+    NICE.find((c) => c % tfMin === 0 && spanMin / c <= 6) ?? Math.ceil(spanMin / 6 / tfMin) * tfMin;
+  const stepSlots = Math.max(1, Math.round(interval / tfMin));
+  const fzSlot = p.context.length; // "now" = the freeze
+  const kMin = Math.ceil((viewStart - fzSlot) / stepSlots);
+  const kMax = Math.floor((viewStart + viewCount - fzSlot) / stepSlots);
+  const maxAbsMin = Math.max(Math.abs(kMin), Math.abs(kMax), 1) * interval;
+  const unit: 'm' | 'h' | 'd' = maxAbsMin < 60 ? 'm' : maxAbsMin <= 72 * 60 ? 'h' : 'd';
+  for (let k = kMin; k <= kMax; k++) {
+    const slot = fzSlot + k * stepSlots;
     const x = edgeX(slot);
     if (x < plot.x - 0.5 || x > axisX + 0.5) continue;
     ctx.strokeStyle = GRID;
@@ -117,9 +130,8 @@ export function drawChart(ctx: CanvasRenderingContext2D, rect: Rect, p: ChartPar
     ctx.moveTo(x, plot.y);
     ctx.lineTo(x, plot.y + plot.h);
     ctx.stroke();
-    const off = slot - p.context.length;
     ctx.fillStyle = AXIS_TEXT;
-    ctx.fillText(off === 0 ? 'now' : fmtRelTime(off, p.timeframe), x, plot.y + plot.h + 4);
+    ctx.fillText(k === 0 ? 'now' : fmtAxisTime(k * interval, unit), x, plot.y + plot.h + 4);
   }
 
   // Axis rule (the line dividing chart from the price scale).
@@ -269,15 +281,10 @@ function fmtPrice(v: number, dec: number): string {
   return v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
-function fmtRelTime(offCandles: number, tf: string): string {
-  const minutes = offCandles * (TF_MIN[tf] ?? 60);
+/** Format a signed minute offset in ONE fixed unit, so an axis never mixes m/h/d. */
+function fmtAxisTime(minutes: number, unit: 'm' | 'h' | 'd'): string {
   const sign = minutes < 0 ? '−' : '+';
-  const a = Math.abs(minutes);
-  if (a < 60) return `${sign}${a}m`;
-  if (a < 1440) {
-    const h = a / 60;
-    return `${sign}${Number.isInteger(h) ? h : h.toFixed(1)}h`;
-  }
-  const d = a / 1440;
-  return `${sign}${Number.isInteger(d) ? d : d.toFixed(1)}d`;
+  const m = Math.abs(minutes);
+  const v = unit === 'm' ? m : unit === 'h' ? m / 60 : m / 1440;
+  return `${sign}${Number.isInteger(v) ? v : v.toFixed(1)}${unit}`;
 }
