@@ -55,6 +55,9 @@ export class Game {
   private level: Level = DEFAULT_LEVEL;
   private pendingMode: Mode = 'practice';
 
+  /** Last whole second we ticked for, so the countdown tick fires once per second. */
+  private lastTickSec = -1;
+
   constructor(
     private readonly vp: Viewport,
     private readonly input: Input,
@@ -81,6 +84,12 @@ export class Game {
       if (r.phase === 'decide') {
         if (gesture.zoomFactor !== 1) this.roundView.zoomBy(gesture.zoomFactor, r);
         if (gesture.panDx !== 0) this.roundView.panByPixels(gesture.panDx, this.vp, r);
+        // Urgency tick over the final seconds (once per second, only pre-lock).
+        const sec = Math.ceil(r.decisionLeft);
+        if (sec !== this.lastTickSec) {
+          this.lastTickSec = sec;
+          if (!r.locked && sec <= 3 && sec >= 1) this.audio.tick();
+        }
       }
       r.update(dt);
       this.roundView.update(dt, r);
@@ -182,6 +191,14 @@ export class Game {
     const px = this.input.pointerX;
     const py = this.input.pointerY;
 
+    // Global SFX toggle (top-right on every screen).
+    const mr = this.muteRect();
+    if (px >= mr.x && px <= mr.x + mr.w && py >= mr.y && py <= mr.y + mr.h) {
+      this.audio.setMuted(!this.audio.isMuted);
+      this.audio.coin(); // audible only when unmuting — instant feedback
+      return;
+    }
+
     switch (this.screen) {
       case 'title':
         this.onTapTitle(px, py);
@@ -205,6 +222,13 @@ export class Game {
   }
 
   private onTapTitle(px: number, py: number): void {
+    // The small brand-CTA chip (the campaign funnel, kept light).
+    const cr = this.title.ctaRect(this.vp);
+    if (px >= cr.x && px <= cr.x + cr.w && py >= cr.y && py <= cr.y + cr.h) {
+      this.audio.coin();
+      this.adapter.openLink(SIGNUP_URL);
+      return;
+    }
     const id = hitButton(this.title.buttons(this.vp), px, py);
     if (!id) return;
     this.audio.coin();
@@ -242,6 +266,12 @@ export class Game {
     const m = this.match;
     if (!m) return;
     const r = m.round;
+
+    // The intro is deliberately slow — a tap skips straight to the decision.
+    if (r.phase === 'preroll' || r.phase === 'playback') {
+      r.skipIntro();
+      return;
+    }
 
     if (r.phase === 'decide') {
       const inside = (rect: { x: number; y: number; w: number; h: number }): boolean =>
@@ -310,6 +340,10 @@ export class Game {
   }
 
   // ---- button layouts ----------------------------------------------------
+  private muteRect(): { x: number; y: number; w: number; h: number } {
+    return { x: this.vp.w - 60, y: 12, w: 48, h: 26 };
+  }
+
   private backButtons(): Button[] {
     const { w, h } = this.vp;
     const bw = Math.min(w * 0.5, 220);
@@ -371,6 +405,29 @@ export class Game {
     else if (this.screen === 'leaderboard') this.renderLeaderboard();
 
     this.particles.render(ctx);
+    this.renderMute();
+  }
+
+  /** Small global SFX toggle, top-right on every screen (SPEC §9: mute). */
+  private renderMute(): void {
+    const { ctx } = this.vp;
+    const r = this.muteRect();
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, 13);
+    ctx.fillStyle = 'rgba(23,31,58,0.75)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = colors.border;
+    ctx.stroke();
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.semibold} 10px ${fonts.family}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('SFX', r.x + 8, r.y + r.h / 2 + 0.5);
+    ctx.beginPath();
+    ctx.arc(r.x + r.w - 11, r.y + r.h / 2, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = this.audio.isMuted ? 'rgba(138,148,166,0.45)' : colors.rebateGold;
+    ctx.fill();
+    ctx.textBaseline = 'alphabetic';
   }
 
   private renderBackground(): void {

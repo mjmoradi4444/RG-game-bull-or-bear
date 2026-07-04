@@ -64,6 +64,12 @@ export class Round {
     this.resolve(call);
   }
 
+  /** Tap during the intro: jump straight to the decision (playback is deliberately
+   *  slow, so impatient / repeat players aren't held hostage by it). */
+  skipIntro(): void {
+    if (this.phase === 'preroll' || this.phase === 'playback') this.enter('decide');
+  }
+
   private resolve(call: Call): void {
     this.call = call;
     this.locked = true;
@@ -76,10 +82,11 @@ export class Round {
     this.t = 0;
   }
 
-  /** 0..1 eased fraction of context candles to show (streams in during playback). */
+  /** 0..1 fraction of context candles to show. LINEAR during playback so the feed
+   *  streams at a steady, readable pace (easing front-loaded a rush of candles). */
   get playbackFrac(): number {
     if (this.phase === 'preroll') return 0;
-    if (this.phase === 'playback') return easeOutCubic(clamp(this.t / PLAYBACK_S, 0, 1));
+    if (this.phase === 'playback') return clamp(this.t / PLAYBACK_S, 0, 1);
     return 1;
   }
 

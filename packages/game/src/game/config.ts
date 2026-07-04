@@ -14,8 +14,10 @@ export const CONFIG = {
   /** Seconds on the decision timer once the chart freezes. 15s: real analysis
    *  (zoom/pan + reading structure) takes time; this isn't a reflex game. */
   DECISION_SECONDS: 15,
-  /** Playback duration for streaming the context candles in. */
-  PLAYBACK_MS: 4000,
+  /** Playback duration for streaming the context candles in. 13s (~70% slower than
+   *  the original 4s): 100 candles at ~7.7/s reads like a live feed instead of a
+   *  blur. Impatient players can tap to skip straight to the decision. */
+  PLAYBACK_MS: 13000,
   /** Reveal duration for animating the real future candles. */
   REVEAL_MS: 3000,
   /** Rounds per match. 5 keeps a match short with 15s thinking time + a teaching

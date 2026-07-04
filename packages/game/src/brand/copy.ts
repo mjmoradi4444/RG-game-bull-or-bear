@@ -45,7 +45,10 @@ export const COPY = {
   youScored: (correct: number, total: number): string => `You called ${correct} of ${total}`,
   accuracyLabel: 'accuracy',
   playAgain: 'Play Again',
-  cta: 'Trade for real & earn rebates → RebateGain',
+  cta: 'Start earning rebates →',
+  /** Small brand chip on the title — the campaign hook, kept light. */
+  titleCta: 'Win or lose, the rebate pays →',
+  tapToSkip: 'tap to skip ›',
   rematch: 'Rematch',
   share: 'Share',
   back: 'Back',

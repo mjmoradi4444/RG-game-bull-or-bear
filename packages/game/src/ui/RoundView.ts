@@ -270,6 +270,9 @@ export class RoundView {
     ctx.fillStyle = 'rgba(138,148,166,0.7)';
     ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
     ctx.fillText('Reading the market…', vp.w / 2, vp.h * 0.64);
+    ctx.fillStyle = 'rgba(138,148,166,0.5)';
+    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+    ctx.fillText(COPY.tapToSkip, vp.w / 2, vp.h * 0.675);
   }
 
   private drawDecide(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round): void {

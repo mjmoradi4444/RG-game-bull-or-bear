@@ -1,7 +1,7 @@
 import type { Viewport } from '../engine/Viewport';
 import { colors, fonts } from '../brand/tokens';
 import { COPY } from '../brand/copy';
-import { drawGlassPanel } from './glass';
+import { drawGlassPanel, roundRectPath } from './glass';
 import { type Button, drawButton } from './Button';
 import { wrapText } from './text';
 
@@ -42,6 +42,14 @@ export class Title {
     return out;
   }
 
+  /** The small brand-CTA chip under the mode buttons (this game IS the campaign —
+   *  keep the funnel present but light on the title). */
+  ctaRect(vp: Viewport): { x: number; y: number; w: number; h: number } {
+    const h = 30;
+    const w = Math.min(vp.w * 0.66, 250);
+    return { x: vp.w / 2 - w / 2, y: vp.h * 0.845, w, h };
+  }
+
   render(ctx: CanvasRenderingContext2D, vp: Viewport, pulse: number): void {
     const { w, h } = vp;
     const cx = w / 2;
@@ -71,6 +79,22 @@ export class Title {
     ctx.fillText(COPY.tagline, cx, h * 0.48 + 30);
 
     for (const b of this.buttons(vp)) drawButton(ctx, b);
+
+    // Small, distinct brand CTA — a gold-rimmed pill with a soft pulse (subtle,
+    // not another big button: the campaign hook stays light on the title).
+    const cr = this.ctaRect(vp);
+    const glow = 0.35 + 0.18 * Math.sin(pulse * 2.2);
+    roundRectPath(ctx, cr.x, cr.y, cr.w, cr.h, cr.h / 2);
+    ctx.fillStyle = 'rgba(245,196,81,0.08)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(245,196,81,${glow.toFixed(3)})`;
+    ctx.stroke();
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(COPY.titleCta, cx, cr.y + cr.h / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
 
     // Compliance disclaimer (SPEC §9) — visible on the title, not buried.
     ctx.fillStyle = 'rgba(138,148,166,0.8)';

@@ -71,4 +71,9 @@ export class Audio {
   loss(): void {
     this.tone(170, 0.18, 'sawtooth', 0.16, 90);
   }
+
+  /** Soft clock tick — the last seconds of the decision countdown. */
+  tick(): void {
+    this.tone(1250, 0.05, 'square', 0.05);
+  }
 }
