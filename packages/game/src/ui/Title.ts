@@ -50,7 +50,12 @@ export class Title {
     return { x: vp.w / 2 - w / 2, y: vp.h * 0.845, w, h };
   }
 
-  render(ctx: CanvasRenderingContext2D, vp: Viewport, pulse: number): void {
+  render(
+    ctx: CanvasRenderingContext2D,
+    vp: Viewport,
+    pulse: number,
+    banner: string | null = null,
+  ): void {
     const { w, h } = vp;
     const cx = w / 2;
 
@@ -77,6 +82,17 @@ export class Title {
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} ${Math.min(w * 0.042, 17)}px ${fonts.family}`;
     ctx.fillText(COPY.tagline, cx, h * 0.48 + 30);
+
+    // Incoming-challenge banner — so a challenged friend can't miss the duel.
+    if (banner) {
+      const ba = 0.75 + 0.25 * Math.sin(pulse * 3);
+      ctx.save();
+      ctx.globalAlpha = ba;
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.bold} ${Math.min(w * 0.04, 15)}px ${fonts.family}`;
+      ctx.fillText(banner, cx, h * 0.552);
+      ctx.restore();
+    }
 
     for (const b of this.buttons(vp)) drawButton(ctx, b);
 

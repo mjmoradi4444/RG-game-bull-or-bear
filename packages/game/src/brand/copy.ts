@@ -63,6 +63,8 @@ export const COPY = {
   youLose: 'You lose',
   tie: 'Tie',
   shareToChallenge: 'Share this link to challenge a friend',
+  incomingChallenge: (name: string, score: number, total: number): string =>
+    `⚔ ${name} challenged you — beat ${score}/${total}!`,
   challengeMsg: (correct: number, total: number): string =>
     `I scored ${correct}/${total} on the RebateGain Trading Duel. Can you beat me?`,
 

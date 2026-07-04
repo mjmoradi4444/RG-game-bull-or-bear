@@ -55,8 +55,15 @@ export class GamesPlatformAdapter implements TelegramAdapter {
     }
   }
 
-  share(): void {
-    // Games platform: re-share the game message into a chat.
+  share(text?: string, url?: string): void {
+    // A challenge carries a URL (the duel seed) — route it through Telegram's native
+    // share sheet so the friend receives the exact same-puzzles link. A plain share
+    // (no URL) re-shares the game message via the Games API.
+    if (url) {
+      const t = text ? `&text=${encodeURIComponent(text)}` : '';
+      window.open(`https://t.me/share/url?url=${encodeURIComponent(url)}${t}`, '_blank', 'noopener');
+      return;
+    }
     try {
       proxy()?.shareScore?.();
     } catch {
@@ -73,7 +80,12 @@ export class GamesPlatformAdapter implements TelegramAdapter {
   }
 
   getStartParam(): string | null {
-    return hashParam('duel') ?? new URLSearchParams(location.search).get('duel') ?? null;
+    // Accept both spellings: challengeUrl writes ?startapp=…; `duel` kept for
+    // compatibility with hand-built links.
+    const q = new URLSearchParams(location.search);
+    return (
+      hashParam('startapp') ?? hashParam('duel') ?? q.get('startapp') ?? q.get('duel') ?? null
+    );
   }
 }
 

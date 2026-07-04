@@ -397,7 +397,12 @@ export class Game {
     ctx.fillRect(0, 0, w, h);
     this.renderBackground();
 
-    if (this.screen === 'title') this.title.render(ctx, this.vp, this.pulse);
+    if (this.screen === 'title') {
+      const banner = this.opponent
+        ? COPY.incomingChallenge(this.opponent.name, this.opponent.score, CONFIG.ROUNDS)
+        : null;
+      this.title.render(ctx, this.vp, this.pulse, banner);
+    }
     else if (this.screen === 'levelSelect') this.renderLevelSelect();
     else if (this.screen === 'round' && this.match) {
       ctx.save();
