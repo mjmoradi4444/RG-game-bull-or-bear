@@ -1,4 +1,3 @@
-import puzzlesData from '../data/puzzles.json';
 import type { Rng } from '../engine/Rng';
 import type { Candle, Outcome, Puzzle, Source, Timeframe } from './Puzzle';
 import { patternKey } from './priceAction';
@@ -41,12 +40,23 @@ function decode(s: StoredPuzzle): Puzzle {
  * Holds the decoded puzzle dataset and hands out balanced, varied selections.
  * Selection takes an Rng so it can be deterministic from a match seed (Phase 5);
  * solo play just passes the time-seeded engine Rng.
+ *
+ * The dataset (~350 KB gzipped) is loaded via dynamic import, so Vite splits it out
+ * of the main bundle: the title paints from a small JS chunk while the data streams
+ * in parallel (Telegram webviews open on 3G; SPEC §9 wants a fast first paint).
+ * Callers gate on `isReady` / `ready` before `pick()`.
  */
 export class PuzzleBank {
-  private readonly all: Puzzle[];
+  private all: Puzzle[] = [];
+  /** Resolves once the dataset chunk has arrived and decoded. */
+  readonly ready: Promise<void>;
+  isReady = false;
 
   constructor() {
-    this.all = (puzzlesData as unknown as StoredPuzzle[]).map(decode);
+    this.ready = import('../data/puzzles.json').then((m) => {
+      this.all = (m.default as unknown as StoredPuzzle[]).map(decode);
+      this.isReady = true;
+    });
   }
 
   get size(): number {

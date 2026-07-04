@@ -146,6 +146,12 @@ export class Game {
   }
 
   private startMatch(mode: Mode, level: Level): void {
+    // The dataset chunk loads in parallel with boot; in the rare case the player
+    // outraces it, start the match the moment it lands.
+    if (!this.bank.isReady) {
+      void this.bank.ready.then(() => this.startMatch(mode, level));
+      return;
+    }
     this.mode = mode;
     this.level = level;
     // Challenge mode replays the opponent's seed + level (same puzzles); else fresh.
