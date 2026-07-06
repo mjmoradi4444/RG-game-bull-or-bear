@@ -60,7 +60,8 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_SSH_PORT }}     # optional; defaults to 22 if the secret is empty
+          port: ${{ secrets.VPS_SSH_PORT || '22' }} # optional; defaults to 22 if the secret is empty
+          debug: true
           script_stop: true                     # abort on the first failing command
           script: |
             set -e
