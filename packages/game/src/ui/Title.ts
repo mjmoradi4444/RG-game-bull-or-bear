@@ -47,7 +47,7 @@ export class Title {
   ctaRect(vp: Viewport): { x: number; y: number; w: number; h: number } {
     const h = 30;
     const w = Math.min(vp.w * 0.66, 250);
-    return { x: vp.w / 2 - w / 2, y: vp.h * 0.845, w, h };
+    return { x: vp.w / 2 - w / 2, y: vp.h * 0.865, w, h };
   }
 
   render(
