@@ -1,0 +1,84 @@
+name: CI / CD
+
+# CI (typecheck + build) runs on every push and PR.
+# CD (SSH deploy to the VPS) runs only after CI passes on `main`,
+# and can also be triggered by hand from the Actions tab.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Name of the pm2 process on the VPS. Override without editing this file by adding a
+# repo Actions *variable* named PM2_NAME (Settings → Secrets and variables → Actions →
+# Variables). Falls back to `bull-or-bear` if that variable isn't set.
+env:
+  PM2_NAME: ${{ vars.PM2_NAME || 'bull-or-bear' }}
+
+jobs:
+  ci:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck bot
+        run: npm run typecheck -w @rebate-rush/bot
+
+      - name: Build game (tsc --noEmit + vite build)
+        run: npm run build -w @rebate-rush/game
+
+      # Fail early if the committed dataset the game needs went missing.
+      - name: Sanity-check dataset & build output
+        run: |
+          test -f packages/game/src/data/puzzles.json
+          test -f packages/game/dist/index.html
+
+  deploy:
+    name: Deploy to VPS
+    needs: ci
+    # Only deploy real pushes to main (or a manual run) — never PRs from forks.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      # Never let two deploys run at once (the bot uses long polling — one instance only).
+      group: deploy-vps
+      cancel-in-progress: false
+    steps:
+      - name: SSH deploy (pull → install → build → restart)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_SSH_PORT }}     # optional; defaults to 22 if the secret is empty
+          script_stop: true                     # abort on the first failing command
+          script: |
+            set -e
+            # Make node/npm/pm2 available in this non-login shell (nvm installs need this).
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+            cd "${{ secrets.DEPLOY_PATH }}"
+
+            # Take exactly what's on origin/main. .env and .data/ are git-ignored,
+            # so this never clobbers secrets or the leaderboard.
+            git fetch --all --prune
+            git reset --hard origin/main
+
+            npm ci
+            npm run build -w @rebate-rush/game
+
+            # Restart if the process exists, otherwise start it for the first time.
+            pm2 restart "${{ env.PM2_NAME }}" --update-env \
+              || pm2 start "npm run start -w @rebate-rush/bot" --name "${{ env.PM2_NAME }}"
+            pm2 save
