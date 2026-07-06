@@ -65,21 +65,39 @@ jobs:
           script_stop: true                     # abort on the first failing command
           script: |
             set -e
-            # Make node/npm/pm2 available in this non-login shell (nvm installs need this).
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+            echo "=== Starting Deployment Script ==="
+            echo "Current user: $(whoami)"
 
+            # Safely load NVM if it exists
+            export NVM_DIR="$HOME/.nvm"
+            if [ -s "$NVM_DIR/nvm.sh" ]; then
+              echo "Loading NVM from $NVM_DIR/nvm.sh..."
+              . "$NVM_DIR/nvm.sh"
+            else
+              echo "NVM not found at $NVM_DIR/nvm.sh, relying on system-wide node/npm"
+            fi
+
+            echo "Node path: $(which node || echo 'not found')"
+            echo "NPM path: $(which npm || echo 'not found')"
+            echo "PM2 path: $(which pm2 || echo 'not found')"
+
+            echo "Changing directory to ${{ secrets.DEPLOY_PATH }}..."
             cd "${{ secrets.DEPLOY_PATH }}"
 
-            # Take exactly what's on origin/main. .env and .data/ are git-ignored,
-            # so this never clobbers secrets or the leaderboard.
+            echo "Fetching and resetting to origin/main..."
             git fetch --all --prune
             git reset --hard origin/main
 
+            echo "Installing dependencies..."
             npm ci
+
+            echo "Building game package..."
             npm run build -w @rebate-rush/game
 
-            # Restart if the process exists, otherwise start it for the first time.
+            echo "Restarting application via PM2..."
             pm2 restart "${{ env.PM2_NAME }}" --update-env \
               || pm2 start "npm run start -w @rebate-rush/bot" --name "${{ env.PM2_NAME }}"
+            
+            echo "Saving PM2 configuration..."
             pm2 save
+            echo "=== Deployment Finished Successfully ==="
