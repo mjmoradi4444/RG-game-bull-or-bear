@@ -242,15 +242,15 @@ Set these in the repo: **Settings → Secrets and variables → Actions → New 
 
 | Secret | What it is |
 |---|---|
-| `VPS_HOST` | Server IP or hostname |
-| `VPS_USER` | SSH user that owns the checkout (e.g. `deploy` or your user) |
-| `VPS_SSH_KEY` | A **private** SSH key whose public half is in that user's `~/.ssh/authorized_keys` |
+| `SSH_HOST` | Server IP or hostname |
+| `SSH_USERNAME` | SSH user that owns the checkout (e.g. `root` or your user) |
+| `SSH_KEY` | A **private** SSH key whose public half is in that user's `~/.ssh/authorized_keys` |
 | `DEPLOY_PATH` | Absolute path of the checkout, e.g. `/srv/bull-or-bear` |
-| `VPS_SSH_PORT` | *(optional)* SSH port if not 22 |
+| `SSH_PORT` | *(optional)* SSH port if not 22 |
 
 > Generate a dedicated deploy key — don't reuse a personal one:
 > `ssh-keygen -t ed25519 -f deploy_key -N ""` → put `deploy_key.pub` in the server's
-> `~/.ssh/authorized_keys`, paste the private `deploy_key` into `VPS_SSH_KEY`.
+> `~/.ssh/authorized_keys`, paste the private `deploy_key` into `SSH_KEY`.
 
 ### Optional variable
 
