@@ -78,11 +78,11 @@ export function drawVerifyChip(
   if (expanded) {
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
-    ctx.fillText(`${fullFmt.format(date)} UTC · tap to verify on any public chart`, vp.w / 2, y + h + 14);
+    ctx.fillText(`${fullFmt.format(date)} UTC · tap to verify on any public chart`, vp.w / 2, y + h + 18);
   } else {
     ctx.fillStyle = 'rgba(138,148,166,0.7)';
     ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
-    ctx.fillText('tap to see exact time', vp.w / 2, y + h + 12);
+    ctx.fillText('tap to see exact time', vp.w / 2, y + h + 16);
   }
 
   return { x, y, w, h };
@@ -90,6 +90,6 @@ export function drawVerifyChip(
 
 export function hitChip(rect: ChipRect | null, px: number, py: number): boolean {
   if (!rect) return false;
-  // Generous vertical padding so the small pill is easy to tap.
-  return px >= rect.x && px <= rect.x + rect.w && py >= rect.y - 8 && py <= rect.y + rect.h + 8;
+  // Generous vertical padding so the small pill and its sub-text are easy to tap.
+  return px >= rect.x && px <= rect.x + rect.w && py >= rect.y - 10 && py <= rect.y + rect.h + 24;
 }

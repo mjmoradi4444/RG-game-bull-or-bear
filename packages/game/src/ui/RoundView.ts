@@ -345,26 +345,26 @@ export class RoundView {
     ctx.fillStyle = ok ? colors.up : colors.down;
     ctx.font = `${fonts.weight.black} ${Math.min(vp.w * 0.08, 32)}px ${fonts.family}`;
     const verdict = ok ? `✓ ${COPY.correct}` : `✗ ${COPY.wrong}`;
-    ctx.fillText(ok && combo >= 2 ? `${verdict}  ×${combo}` : verdict, cx, vp.h * 0.632);
+    ctx.fillText(ok && combo >= 2 ? `${verdict}  ×${combo}` : verdict, cx, vp.h * 0.62);
 
     // Price-action teaching: why it resolved that way (the requested explanation).
     const ex = explainOutcome(round.puzzle);
     ctx.fillStyle = colors.rebateGold;
     ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
-    ctx.fillText(ex.pattern, cx, vp.h * 0.668);
+    ctx.fillText(ex.pattern, cx, vp.h * 0.655);
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
     wrapText(ctx, ex.why, Math.min(vp.w * 0.84, 350)).slice(0, 3).forEach((ln, i) =>
-      ctx.fillText(ln, cx, vp.h * 0.692 + i * 15),
+      ctx.fillText(ln, cx, vp.h * 0.675 + i * 15),
     );
 
     // Verify chip (trust) + a compact rebate reminder.
-    this.chipRect = drawVerifyChip(ctx, vp, round.puzzle, vp.h * 0.77, this.verifyExpanded);
+    this.chipRect = drawVerifyChip(ctx, vp, round.puzzle, vp.h * 0.75, this.verifyExpanded);
 
     ctx.fillStyle = 'rgba(245,196,81,0.85)';
     ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
     ctx.textAlign = 'center';
-    ctx.fillText(COPY.rebateReminder, cx, vp.h * 0.82);
+    ctx.fillText(COPY.rebateReminder, cx, vp.h * 0.815);
 
     if (round.phase === 'done') {
       drawButton(ctx, this.continueButton(vp, round.index >= round.total - 1));
