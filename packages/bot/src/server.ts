@@ -8,6 +8,7 @@ import { bot } from './bot';
 import { clampScore, rateLimit, verifyContext } from './security';
 import { submitGameScore } from './telegram';
 import { recordScore, topScores } from './leaderboard';
+import { attachMatchmaking } from './matchmaking';
 
 // Signed launch tokens are accepted for 30 min (one match + browsing), not 24h —
 // tightens the replay window since the token rides in the game URL fragment.
@@ -94,9 +95,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const score = clampScore(data.score);
     const best = recordScore(ctx.u, ctx.n ?? 'Player', score);
     // Native Telegram in-chat score too, best-effort (ignore MESSAGE_ID_INVALID on stale msgs).
-    void submitGameScore(bot.api, ctx, score).catch((e) =>
-      console.warn('[score] setGameScore skipped:', e instanceof Error ? e.message : e),
-    );
+    if (bot) {
+      void submitGameScore(bot.api, ctx, score).catch((e) =>
+        console.warn('[score] setGameScore skipped:', e instanceof Error ? e.message : e),
+      );
+    }
     return send(res, 200, { ok: true, score: best });
   }
 
@@ -105,6 +108,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!ctx) return send(res, 401, { ok: false, error: 'bad_context' });
     const scores = topScores().map((e, i) => ({ rank: i + 1, name: e.name, score: e.score, isSelf: e.u === ctx.u }));
     return send(res, 200, { ok: true, scores });
+  }
+
+  // Telegram profile photo proxy for the multiplayer VS screen. The photo is
+  // fetched with the bot token SERVER-side and re-served from here, so the token
+  // never appears in any URL the client sees.
+  const avatarMatch = /^\/avatar\/(\d{1,15})$/.exec(url.pathname);
+  if (req.method === 'GET' && avatarMatch) {
+    const buf = await fetchAvatar(Number(avatarMatch[1]));
+    if (!buf) return send(res, 404, { ok: false, error: 'no_avatar' });
+    cors(res);
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=3600' });
+    res.end(buf);
+    return;
   }
 
   // Static game (and SPA fallback to index.html for extensionless routes).
@@ -116,6 +132,32 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   send(res, 404, { ok: false, error: 'not_found' });
 }
 
+// In-memory avatar cache (1h) so we don't hammer the Bot API per VS screen.
+const avatarCache = new Map<number, { buf: Buffer | null; exp: number }>();
+async function fetchAvatar(uid: number): Promise<Buffer | null> {
+  const hit = avatarCache.get(uid);
+  if (hit && hit.exp > Date.now()) return hit.buf;
+  let buf: Buffer | null = null;
+  try {
+    if (bot) {
+      const photos = await bot.api.getUserProfilePhotos(uid, { limit: 1 });
+      const sizes = photos.photos[0];
+      const fileId = sizes?.[Math.min(1, sizes.length - 1)]?.file_id; // small-ish size
+      if (fileId) {
+        const f = await bot.api.getFile(fileId);
+        if (f.file_path) {
+          const r = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${f.file_path}`);
+          if (r.ok) buf = Buffer.from(await r.arrayBuffer());
+        }
+      }
+    }
+  } catch {
+    buf = null; // private/no photo → client falls back to an initial-letter circle
+  }
+  avatarCache.set(uid, { buf, exp: Date.now() + 3600_000 });
+  return buf;
+}
+
 export function startServer(): void {
   const server = createServer((req, res) => {
     void handle(req, res).catch((e) => {
@@ -123,5 +165,6 @@ export function startServer(): void {
       send(res, 500, { ok: false, error: 'server_error' });
     });
   });
+  attachMatchmaking(server); // live 1-v-1 duels over WebSocket (/mm)
   server.listen(config.port, () => console.log(`[bot] score API on :${config.port}`));
 }

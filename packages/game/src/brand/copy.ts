@@ -14,9 +14,22 @@ export const COPY = {
   tagline: 'Read the chart. Call the next move.',
 
   // Title modes (SPEC §4.4)
-  challenge: 'Challenge a Friend',
+  challenge: 'Multiplayer',
   practice: 'Quick Play',
   leaderboard: 'Leaderboard',
+
+  // Live matchmaking (lobby + VS screen)
+  findingOpponent: 'Finding an opponent',
+  lobbyHint: 'You’ll be matched with the next player who picks this level.',
+  cancel: 'Cancel',
+  vsTitle: 'VS',
+  startsIn: (s: number): string => `Starting in ${s}…`,
+  suddenDeath: 'SUDDEN DEATH',
+  waitingOpponent: 'Waiting for your opponent to finish…',
+  wonOnTime: 'Decided on speed — faster total calls win',
+  oppLeftWin: 'Opponent left — you win!',
+  connectionLost: 'Connection lost — try again',
+  suddenCount: (n: number): string => `after ${n} sudden-death round${n > 1 ? 's' : ''}`,
 
   // Level select (SPEC §5 — difficulty tiers)
   chooseLevel: 'Choose your level',

@@ -14,6 +14,8 @@ export interface Challenge {
   score: number; // challenger's correct count
   name: string; // challenger display name
   level: LevelId; // the level both players share (same difficulty → same puzzles)
+  /** Challenger's total decision time (ms) — breaks a tied score (faster wins). */
+  timeMs?: number;
 }
 
 const PREFIX = 'duel_';
@@ -35,30 +37,36 @@ function b64urlDecode(s: string): string {
   return decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
 }
 
-/** Encode a challenge as `duel_<token>` for the deep link. Layout: seed|score|level|name
- *  (level before name so a name containing '|' stays unambiguous). */
+/** Encode a challenge as `duel_<token>` for the deep link.
+ *  Layout: seed|score|level|time|name (name last so a '|' in it stays unambiguous). */
 export function encodeChallenge(c: Challenge): string {
   const name = c.name.slice(0, MAX_NAME);
   const score = Math.max(0, Math.min(99, Math.round(c.score)));
-  return PREFIX + b64urlEncode(`${c.seed >>> 0}|${score}|${c.level}|${name}`);
+  const time = Math.max(0, Math.min(9_999_999, Math.round(c.timeMs ?? 0)));
+  return PREFIX + b64urlEncode(`${c.seed >>> 0}|${score}|${c.level}|${time}|${name}`);
 }
 
-/** Decode a start param into a Challenge, or null if it isn't a valid duel link. */
+/** Decode a start param into a Challenge, or null if it isn't a valid duel link.
+ *  Tolerates the older seed|score|level|name layout (no time field). */
 export function decodeChallenge(startParam: string | null): Challenge | null {
   if (!startParam || !startParam.startsWith(PREFIX)) return null;
   try {
     const raw = b64urlDecode(startParam.slice(PREFIX.length));
-    const [seedS, scoreS, levelS, ...nameParts] = raw.split('|');
+    const parts = raw.split('|');
+    const [seedS, scoreS, levelS] = parts;
     const seed = Number(seedS) >>> 0;
     if (!Number.isFinite(seed) || seed === 0) return null;
     const level = (LEVELS as readonly string[]).includes(levelS ?? '')
       ? (levelS as LevelId)
       : 'pro';
+    const hasTime = parts.length >= 5 && /^\d+$/.test(parts[3] ?? '');
+    const nameParts = parts.slice(hasTime ? 4 : 3);
     return {
       seed,
       score: Math.max(0, Math.min(99, Number(scoreS) || 0)),
       name: (nameParts.join('|') || 'A friend').slice(0, MAX_NAME),
       level,
+      timeMs: hasTime ? Number(parts[3]) : undefined,
     };
   } catch {
     return null;

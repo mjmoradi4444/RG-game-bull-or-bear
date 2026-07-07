@@ -11,7 +11,15 @@ import { Match } from './Match';
 import type { Round } from './Round';
 import { type Challenge, challengeUrl, decodeChallenge, makeSeed } from './Challenge';
 import { DEFAULT_LEVEL, LEVELS, type Level, levelById } from './levels';
+import type { Puzzle } from './Puzzle';
 import { accuracyPct } from './scoring';
+import {
+  apiBase,
+  launchGctx,
+  Multiplayer,
+  type MpFinal,
+  type MpMatched,
+} from '../net/Multiplayer';
 import { Title } from '../ui/Title';
 import { RoundView } from '../ui/RoundView';
 import { type Button, drawButton, hitButton } from '../ui/Button';
@@ -19,6 +27,16 @@ import { roundRectPath } from '../ui/glass';
 import { colors, fonts } from '../brand/tokens';
 import { COPY, SIGNUP_URL } from '../brand/copy';
 import { wrapText } from '../ui/text';
+
+/** Seconds the VS face-off holds before the live match starts (tap skips). */
+const VS_SECONDS = 3;
+
+function loadAvatar(path: string | null): HTMLImageElement | null {
+  if (!path) return null;
+  const img = new Image();
+  img.src = `${apiBase()}${path}`;
+  return img;
+}
 
 /**
  * The duel orchestrator. Owns the screen router (title → round → result →
@@ -60,6 +78,21 @@ export class Game {
   /** Last whole second we ticked for, so the countdown tick fires once per second. */
   private lastTickSec = -1;
 
+  // Live 1-v-1 matchmaking (Multiplayer mode).
+  private mp: Multiplayer | null = null;
+  private mpMatched: MpMatched | null = null;
+  private mpFinal: MpFinal | null = null;
+  private mpDropped = false;
+  /** True while the current match is a live matched duel (vs the async link flow). */
+  private live = false;
+  private vsT = 0;
+  /** Total decision time this match (ms) — live + async tiebreak. */
+  private totalMs = 0;
+  /** Sudden-death reserve puzzles (both sides hold the same ones from the seed). */
+  private reserve: Puzzle[] = [];
+  private avatarYou: HTMLImageElement | null = null;
+  private avatarOpp: HTMLImageElement | null = null;
+
   constructor(
     private readonly vp: Viewport,
     private readonly input: Input,
@@ -75,6 +108,12 @@ export class Game {
     if (this.input.consumeFire()) this.onTap();
     const gesture = this.input.takeGesture(); // drained every tick to avoid buildup
     this.particles.update(dt);
+
+    // VS intro: hold the face-off for a beat, then start the live match.
+    if (this.screen === 'vs' && this.mpMatched) {
+      this.vsT += dt;
+      if (this.vsT >= VS_SECONDS) this.startLiveMatch();
+    }
 
     if (this.screen === 'round' && this.match) {
       const r = this.match.round;
@@ -106,6 +145,11 @@ export class Game {
   /** Reveal flair: gold/green burst + win SFX on ✓; shake + loss SFX on ✗. */
   private onVerdict(r: Round): void {
     const { w, h } = this.vp;
+    // Decision time for the tiebreaks; a timeout costs the full window.
+    const ms = Math.round((CONFIG.DECISION_SECONDS - r.decisionLeft) * 1000);
+    this.totalMs += ms;
+    // Live duel: report this round to the server (it relays + scores the match).
+    if (this.live && this.mp) this.mp.sendRound(r.index + 1, r.correct, ms);
     if (r.correct) {
       this.combo++;
       if (this.combo > this.bestCombo) this.bestCombo = this.combo;
@@ -147,18 +191,25 @@ export class Game {
     }
   }
 
-  private startMatch(mode: Mode, level: Level): void {
+  private startMatch(mode: Mode, level: Level, seed?: number): void {
     // The dataset chunk loads in parallel with boot; in the rare case the player
     // outraces it, start the match the moment it lands.
     if (!this.bank.isReady) {
-      void this.bank.ready.then(() => this.startMatch(mode, level));
+      void this.bank.ready.then(() => this.startMatch(mode, level, seed));
       return;
     }
     this.mode = mode;
     this.level = level;
-    // Challenge mode replays the opponent's seed + level (same puzzles); else fresh.
-    this.matchSeed = mode === 'challenge' && this.opponent ? this.opponent.seed : makeSeed();
-    this.match = new Match(this.bank.pick(CONFIG.ROUNDS, new Rng(this.matchSeed), level.difficulty));
+    // Seed priority: explicit (live match) → async challenger's → fresh.
+    this.matchSeed =
+      seed ?? (mode === 'challenge' && this.opponent ? this.opponent.seed : makeSeed());
+    // Pick extra puzzles beyond the match as the sudden-death reserve — deterministic
+    // from the seed, so both sides of a duel hold the identical reserve.
+    const picked = this.bank.pick(CONFIG.ROUNDS + 3, new Rng(this.matchSeed), level.difficulty);
+    this.match = new Match(picked.slice(0, CONFIG.ROUNDS));
+    this.reserve = picked.slice(CONFIG.ROUNDS);
+    this.live = seed !== undefined;
+    this.totalMs = 0;
     this.roundView.reset();
     this.combo = 0;
     this.bestCombo = 0;
@@ -166,6 +217,80 @@ export class Game {
     this.verdictFired = false;
     this.lastRoundIndex = -1;
     this.screen = 'round';
+  }
+
+  // ---- live 1-v-1 matchmaking ---------------------------------------------
+  private enterLobby(level: Level): void {
+    this.level = level;
+    this.mpMatched = null;
+    this.mpFinal = null;
+    this.mpDropped = false;
+    this.avatarYou = null;
+    this.avatarOpp = null;
+    this.screen = 'lobby';
+    this.mp?.dispose();
+    this.mp = new Multiplayer({
+      onMatched: (m) => this.onMpMatched(m),
+      onSudden: () => this.onMpSudden(),
+      onFinal: (f) => this.onMpFinal(f),
+      onDrop: () => this.onMpDrop(),
+    });
+    this.mp.queue(level.id, { gctx: launchGctx(), name: this.adapter.getUser()?.name });
+  }
+
+  private onMpMatched(m: MpMatched): void {
+    this.mpMatched = m;
+    this.level = levelById(m.level);
+    this.avatarYou = loadAvatar(m.you.avatar);
+    this.avatarOpp = loadAvatar(m.opp.avatar);
+    this.vsT = 0;
+    this.screen = 'vs';
+    this.audio.win();
+    this.adapter.haptic('success');
+  }
+
+  private startLiveMatch(): void {
+    if (!this.mpMatched) return;
+    this.opponent = null; // live duel, not the async-link flow
+    this.startMatch('challenge', levelById(this.mpMatched.level), this.mpMatched.seed);
+  }
+
+  /** Tie → the server calls one more round; both sides hold the same reserve. */
+  private onMpSudden(): void {
+    const m = this.match;
+    const extra = this.reserve.shift();
+    if (!m || !extra) return;
+    m.append(extra);
+    this.roundView.reset();
+    this.verdictFired = false;
+    this.lastRoundIndex = -1;
+    this.screen = 'round';
+    this.audio.coin();
+    this.adapter.haptic('warning');
+  }
+
+  private onMpFinal(f: MpFinal): void {
+    this.mpFinal = f;
+    if (f.winner === 'you') this.audio.win();
+    else if (f.winner === 'opp') this.audio.loss();
+    // Forfeit can land mid-round — jump to the result; a normal final lands while
+    // we're already on (or headed to) the result screen.
+    if (f.forfeit) this.screen = 'result';
+  }
+
+  private onMpDrop(): void {
+    this.mpDropped = true;
+    if (this.screen === 'lobby' || this.screen === 'vs') {
+      // Couldn't queue / lost the lobby — back to level select.
+      this.screen = 'levelSelect';
+    }
+    // Mid-match: the render shows "connection lost" on the result if no final came.
+  }
+
+  private leaveLobby(): void {
+    this.mp?.leave();
+    this.mp = null;
+    this.screen = 'levelSelect';
   }
 
   private finishMatch(): void {
@@ -214,6 +339,15 @@ export class Game {
         break;
       case 'levelSelect':
         this.onTapLevelSelect(px, py);
+        break;
+      case 'lobby':
+        if (hitButton(this.lobbyButtons(), px, py) === 'cancel') {
+          this.audio.coin();
+          this.leaveLobby();
+        }
+        break;
+      case 'vs':
+        this.startLiveMatch(); // tap skips the intro
         break;
       case 'round':
         this.onTapRound(px, py);
@@ -267,7 +401,9 @@ export class Game {
       const r = this.levelCardRect(lv);
       if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
         this.audio.coin();
-        this.startMatch(this.pendingMode, lv);
+        // Multiplayer queues for a live opponent on this level; Quick Play starts.
+        if (this.pendingMode === 'challenge') this.enterLobby(lv);
+        else this.startMatch(this.pendingMode, lv);
         return;
       }
     }
@@ -325,6 +461,11 @@ export class Game {
     if (id === 'cta') {
       this.adapter.openLink(SIGNUP_URL);
     } else if (id === 'rematch') {
+      if (this.live) {
+        // Live duel rematch = requeue on the same level for a fresh opponent.
+        this.enterLobby(this.level);
+        return;
+      }
       if (this.mode === 'challenge') this.opponent = null; // a fresh challenge to send
       this.startMatch(this.mode, this.level);
     } else if (id === 'leaderboard') {
@@ -332,6 +473,9 @@ export class Game {
     } else if (id === 'share') {
       this.shareResult();
     } else if (id === 'menu') {
+      this.mp?.dispose();
+      this.mp = null;
+      this.live = false;
       this.screen = 'title';
     }
   }
@@ -343,7 +487,13 @@ export class Game {
       const me = this.adapter.getUser()?.name ?? 'You';
       this.adapter.share(
         COPY.challengeMsg(correct, total),
-        challengeUrl({ seed: this.matchSeed, score: correct, name: me, level: this.level.id }),
+        challengeUrl({
+          seed: this.matchSeed,
+          score: correct,
+          name: me,
+          level: this.level.id,
+          timeMs: Math.round(this.totalMs),
+        }),
       );
     } else {
       this.adapter.share();
@@ -360,6 +510,13 @@ export class Game {
     const bw = Math.min(w * 0.5, 220);
     const bh = 48;
     return [{ id: 'back', x: w / 2 - bw / 2, y: h * 0.86, w: bw, h: bh, label: COPY.back, kind: 'gold' }];
+  }
+
+  private lobbyButtons(): Button[] {
+    const { w, h } = this.vp;
+    const bw = Math.min(w * 0.5, 220);
+    const bh = 48;
+    return [{ id: 'cancel', x: w / 2 - bw / 2, y: h * 0.72, w: bw, h: bh, label: COPY.cancel, kind: 'ghost' }];
   }
 
   private levelCardRect(level: Level): { x: number; y: number; w: number; h: number } {
@@ -409,6 +566,8 @@ export class Game {
       this.title.render(ctx, this.vp, this.pulse, banner);
     }
     else if (this.screen === 'levelSelect') this.renderLevelSelect();
+    else if (this.screen === 'lobby') this.renderLobby();
+    else if (this.screen === 'vs') this.renderVs();
     else if (this.screen === 'round' && this.match) {
       ctx.save();
       if (this.shake > 0) {
@@ -416,6 +575,13 @@ export class Game {
         ctx.translate((Math.random() * 2 - 1) * m, (Math.random() * 2 - 1) * m);
       }
       this.roundView.render(ctx, this.vp, this.match.round, this.match.statuses(), this.combo, this.level);
+      // Sudden-death banner on tie-break rounds (live duels).
+      if (this.live && this.match.round.index >= CONFIG.ROUNDS) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = colors.rebateGold;
+        ctx.font = `${fonts.weight.black} 13px ${fonts.family}`;
+        ctx.fillText(`⚡ ${COPY.suddenDeath} ⚡`, w / 2, h * 0.128 + 16);
+      }
       ctx.restore();
     } else if (this.screen === 'result') this.renderResult();
     else if (this.screen === 'leaderboard') this.renderLeaderboard();
@@ -531,6 +697,145 @@ export class Game {
     ctx.textAlign = 'left';
   }
 
+  /** Matchmaking queue: level chip, searching spinner, cancel. */
+  private renderLobby(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.075, 30)}px ${fonts.family}`;
+    ctx.fillText(COPY.challenge, cx, h * 0.24);
+
+    // Level chip.
+    ctx.fillStyle = this.level.color;
+    ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
+    ctx.fillText(`${this.level.name.toUpperCase()} · ${this.level.weight}× pts`, cx, h * 0.29);
+
+    // Spinner ring.
+    const ry = h * 0.42;
+    const r = 26;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(40,49,84,0.7)';
+    ctx.beginPath();
+    ctx.arc(cx, ry, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = colors.brandBlueFrom;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, ry, r, this.pulse * 3, this.pulse * 3 + Math.PI * 0.75);
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+
+    const dots = '.'.repeat(1 + (Math.floor(this.pulse * 2) % 3));
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.semibold} 16px ${fonts.family}`;
+    ctx.fillText(`${COPY.findingOpponent}${dots}`, cx, h * 0.52);
+
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
+    wrapText(ctx, COPY.lobbyHint, Math.min(w * 0.8, 340)).forEach((ln, i) =>
+      ctx.fillText(ln, cx, h * 0.575 + i * 17),
+    );
+
+    for (const b of this.lobbyButtons()) drawButton(ctx, b);
+    ctx.textAlign = 'left';
+  }
+
+  /** The face-off: both Telegram profiles with a big VS between them. */
+  private renderVs(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+    const m = this.mpMatched;
+    if (!m) return;
+
+    // Facing glows behind each fighter.
+    const glowL = ctx.createRadialGradient(w * 0.26, h * 0.42, 8, w * 0.26, h * 0.42, w * 0.3);
+    glowL.addColorStop(0, 'rgba(10,120,255,0.22)');
+    glowL.addColorStop(1, 'rgba(10,120,255,0)');
+    ctx.fillStyle = glowL;
+    ctx.fillRect(0, 0, w, h);
+    const glowR = ctx.createRadialGradient(w * 0.74, h * 0.42, 8, w * 0.74, h * 0.42, w * 0.3);
+    glowR.addColorStop(0, 'rgba(234,57,67,0.2)');
+    glowR.addColorStop(1, 'rgba(234,57,67,0)');
+    ctx.fillStyle = glowR;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = this.level.color;
+    ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+    ctx.fillText(`${this.level.name.toUpperCase()} DUEL`, cx, h * 0.2);
+
+    this.drawFighter(w * 0.26, h * 0.42, m.you.name, this.avatarYou, colors.brandBlueFrom);
+    this.drawFighter(w * 0.74, h * 0.42, m.opp.name, this.avatarOpp, colors.down);
+
+    // The VS mark — big, gold, with a pulse.
+    const scale = 1 + 0.06 * Math.sin(this.pulse * 5);
+    ctx.save();
+    ctx.translate(cx, h * 0.43);
+    ctx.scale(scale, scale);
+    ctx.fillStyle = colors.rebateGold;
+    ctx.shadowColor = 'rgba(245,196,81,0.6)';
+    ctx.shadowBlur = 22;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.13, 52)}px ${fonts.family}`;
+    ctx.fillText(COPY.vsTitle, 0, 0);
+    ctx.restore();
+
+    const left = Math.max(1, Math.ceil(VS_SECONDS - this.vsT));
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.semibold} 14px ${fonts.family}`;
+    ctx.fillText(COPY.startsIn(left), cx, h * 0.66);
+    ctx.textAlign = 'left';
+  }
+
+  /** One side of the VS screen: avatar (photo or initial) in a colored ring + name. */
+  private drawFighter(
+    x: number,
+    y: number,
+    name: string,
+    img: HTMLImageElement | null,
+    ring: string,
+  ): void {
+    const { ctx } = this.vp;
+    const r = Math.min(this.vp.w * 0.14, 54);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = colors.surface;
+    ctx.fill();
+    ctx.clip();
+    if (img && img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, x - r, y - r, r * 2, r * 2);
+    } else {
+      // Initial-letter fallback (no photo / photo still loading).
+      ctx.fillStyle = ring;
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = colors.text;
+      ctx.font = `${fonts.weight.black} ${r}px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText((name[0] ?? '?').toUpperCase(), x, y + 2);
+    }
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = ring;
+    ctx.stroke();
+
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(name, x, y + r + 26);
+  }
+
   private renderResult(): void {
     const { ctx, w, h } = this.vp;
     const cx = w / 2;
@@ -553,7 +858,9 @@ export class Game {
     ctx.font = `${fonts.weight.black} ${Math.min(w * 0.2, 84)}px ${fonts.family}`;
     ctx.fillText(`${correct}/${total}`, cx, h * 0.3);
 
-    if (this.mode === 'challenge') {
+    if (this.live) {
+      this.renderLiveResult(total, h, cx);
+    } else if (this.mode === 'challenge') {
       this.renderDuelLine(correct, total, h, cx);
     } else {
       ctx.fillStyle = colors.rebateGold;
@@ -579,6 +886,49 @@ export class Game {
     ctx.textAlign = 'left';
   }
 
+  /** Live 1-v-1 result: the server's verdict (or "waiting" until it lands). */
+  private renderLiveResult(total: number, h: number, cx: number): void {
+    const { ctx } = this.vp;
+    const f = this.mpFinal;
+    const oppName = this.mpMatched?.opp.name ?? 'Opponent';
+    ctx.textAlign = 'center';
+    if (!f) {
+      const a = 0.55 + 0.35 * Math.sin(this.pulse * 3);
+      ctx.save();
+      ctx.globalAlpha = this.mpDropped ? 1 : a;
+      ctx.fillStyle = this.mpDropped ? colors.down : colors.textMuted;
+      ctx.font = `${fonts.weight.semibold} 14px ${fonts.family}`;
+      ctx.fillText(this.mpDropped ? COPY.connectionLost : COPY.waitingOpponent, cx, h * 0.375);
+      ctx.restore();
+      return;
+    }
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
+    ctx.fillText(
+      `${COPY.you} ${f.you.score}/${total}   ${COPY.vs}   ${oppName} ${f.opp.score}/${total}`,
+      cx,
+      h * 0.355,
+    );
+    const win = f.winner === 'you';
+    const lose = f.winner === 'opp';
+    ctx.fillStyle = win ? colors.up : lose ? colors.down : colors.textMuted;
+    ctx.font = `${fonts.weight.black} 20px ${fonts.family}`;
+    ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, h * 0.4);
+    // How it was decided (sudden death / speed / forfeit).
+    const note = f.forfeit
+      ? COPY.oppLeftWin
+      : f.onTime
+        ? COPY.wonOnTime
+        : f.sudden && f.sudden > 0
+          ? COPY.suddenCount(f.sudden)
+          : null;
+    if (note) {
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
+      ctx.fillText(note, cx, h * 0.428);
+    }
+  }
+
   /** The duel head-to-head (incoming challenge) or the share prompt (outgoing). */
   private renderDuelLine(correct: number, total: number, h: number, cx: number): void {
     const { ctx } = this.vp;
@@ -588,11 +938,25 @@ export class Game {
       ctx.fillStyle = colors.text;
       ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
       ctx.fillText(`${COPY.you} ${correct}/${total}   ${COPY.vs}   ${this.opponent.name} ${opp}/${total}`, cx, h * 0.36);
-      const win = correct > opp;
-      const lose = correct < opp;
+      // Score decides; a tied score falls back to total decision time when the
+      // challenge link carried it (faster wins — SPEC §4.3).
+      let win = correct > opp;
+      let lose = correct < opp;
+      let onTime = false;
+      const oppMs = this.opponent.timeMs;
+      if (!win && !lose && oppMs && this.totalMs > 0 && Math.round(this.totalMs) !== oppMs) {
+        win = this.totalMs < oppMs;
+        lose = !win;
+        onTime = true;
+      }
       ctx.fillStyle = win ? colors.up : lose ? colors.down : colors.textMuted;
       ctx.font = `${fonts.weight.black} 20px ${fonts.family}`;
       ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, h * 0.41);
+      if (onTime) {
+        ctx.fillStyle = colors.rebateGold;
+        ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
+        ctx.fillText(COPY.wonOnTime, cx, h * 0.438);
+      }
     } else {
       ctx.fillStyle = colors.rebateGold;
       ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;

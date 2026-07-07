@@ -6,11 +6,13 @@ function required(name: string): string {
   return v;
 }
 
-/** All bot config from the environment. BOT_TOKEN never leaves the server. */
+/** All bot config from the environment. BOT_TOKEN never leaves the server.
+ *  BOT_TOKEN/GAME_URL are optional so the HTTP+matchmaking server can run locally
+ *  (server-only dev mode) without Telegram; production must set both. */
 export const config = {
-  botToken: required('BOT_TOKEN'),
+  botToken: process.env.BOT_TOKEN ?? '',
   gameShortName: process.env.GAME_SHORT_NAME ?? 'bullorbear',
-  gameUrl: required('GAME_URL'),
+  gameUrl: process.env.GAME_URL ?? 'http://localhost:8080',
   scoreSecret: required('SCORE_SECRET'),
   port: Number(process.env.PORT ?? 8080),
   allowOrigin: process.env.ALLOW_ORIGIN ?? '*',

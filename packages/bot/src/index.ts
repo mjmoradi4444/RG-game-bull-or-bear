@@ -9,6 +9,10 @@ import { config } from './config';
  */
 async function main(): Promise<void> {
   startServer();
+  if (!bot) {
+    console.warn('[bot] BOT_TOKEN not set — running server-only (game + API + matchmaking).');
+    return;
+  }
   const me = await bot.api.getMe();
   console.log(`[bot] @${me.username} ready · game "${config.gameShortName}"`);
   await bot.start({ drop_pending_updates: true });

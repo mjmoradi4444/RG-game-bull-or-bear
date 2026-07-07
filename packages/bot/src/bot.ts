@@ -8,21 +8,22 @@ import { signContext } from './security';
  *   inline_query  → share the game into any chat (inline mode is mandatory for games)
  *   Play tapped   → answer the callback with the game URL + a signed launch context
  */
-export const bot = new Bot(config.botToken);
+/** Null when BOT_TOKEN is unset (local server-only dev) — guard all uses. */
+export const bot = config.botToken ? new Bot(config.botToken) : null;
 
-bot.catch((err) => console.error('[bot] error:', err.error));
+bot?.catch((err) => console.error('[bot] error:', err.error));
 
-bot.command('start', async (ctx) => {
+bot?.command('start', async (ctx) => {
   await ctx.replyWithGame(config.gameShortName);
 });
 
-bot.on('inline_query', async (ctx) => {
+bot?.on('inline_query', async (ctx) => {
   await ctx.answerInlineQuery([{ type: 'game', id: 'bob', game_short_name: config.gameShortName }], {
     cache_time: 0,
   });
 });
 
-bot.on('callback_query:game_short_name', async (ctx) => {
+bot?.on('callback_query:game_short_name', async (ctx) => {
   const q = ctx.callbackQuery;
   if (q.game_short_name !== config.gameShortName) {
     await ctx.answerCallbackQuery({ text: 'Unknown game' });

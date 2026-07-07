@@ -37,6 +37,14 @@ export class Match {
     if (!this.isLast) this.current++;
   }
 
+  /** Append a sudden-death round (live 1-v-1 tie) and make it current. Both clients
+   *  hold the same reserve puzzles from the match seed, so the extra round is
+   *  identical on both sides. */
+  append(puzzle: Puzzle): void {
+    this.rounds.push(new Round(puzzle, this.rounds.length, this.rounds.length + 1));
+    this.current = this.rounds.length - 1;
+  }
+
   /** Per-round status for the tally pips. */
   statuses(): RoundStatus[] {
     return this.rounds.map((r, i) => {

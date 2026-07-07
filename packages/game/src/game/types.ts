@@ -1,5 +1,12 @@
 /** Top-level screens of the duel. */
-export type Screen = 'title' | 'levelSelect' | 'round' | 'result' | 'leaderboard';
+export type Screen =
+  | 'title'
+  | 'levelSelect'
+  | 'lobby'
+  | 'vs'
+  | 'round'
+  | 'result'
+  | 'leaderboard';
 
 /** Which mode the player chose from the title. */
 export type Mode = 'practice' | 'challenge';
