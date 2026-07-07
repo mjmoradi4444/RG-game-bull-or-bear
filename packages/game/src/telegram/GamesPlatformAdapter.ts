@@ -61,7 +61,7 @@ export class GamesPlatformAdapter implements TelegramAdapter {
     // (no URL) re-shares the game message via the Games API.
     if (url) {
       const t = text ? `&text=${encodeURIComponent(text)}` : '';
-      window.open(`https://t.me/share/url?url=${encodeURIComponent(url)}${t}`, '_blank', 'noopener');
+      openExternal(`https://t.me/share/url?url=${encodeURIComponent(url)}${t}`);
       return;
     }
     try {
@@ -76,7 +76,7 @@ export class GamesPlatformAdapter implements TelegramAdapter {
   }
 
   openLink(url: string): void {
-    window.open(url, '_blank', 'noopener');
+    openExternal(url);
   }
 
   getStartParam(): string | null {
@@ -91,6 +91,22 @@ export class GamesPlatformAdapter implements TelegramAdapter {
 
 function proxy(): GameProxy | undefined {
   return (window as unknown as { TelegramGameProxy?: GameProxy }).TelegramGameProxy;
+}
+
+/**
+ * Open a URL from inside Telegram's game webview, which commonly BLOCKS
+ * window.open (popups) — the exact reason Share/CTA taps can look dead in
+ * production while working in a normal browser. If the popup is blocked,
+ * navigate the webview itself; t.me links are intercepted natively by Telegram.
+ */
+function openExternal(url: string): void {
+  let w: Window | null = null;
+  try {
+    w = window.open(url, '_blank', 'noopener');
+  } catch {
+    w = null;
+  }
+  if (!w) window.location.href = url;
 }
 
 function hashParam(key: string): string | null {

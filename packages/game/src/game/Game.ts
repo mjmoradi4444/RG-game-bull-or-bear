@@ -46,6 +46,8 @@ export class Game {
 
   private leaderboard: LeaderEntry[] = [];
   private leaderboardLoading = false;
+  /** Where the leaderboard was opened from, so Back returns there (result vs title). */
+  private leaderboardFrom: Screen = 'title';
 
   // Async duel (SPEC §4): the seed both players share + the incoming challenger.
   private matchSeed = 0;
@@ -178,6 +180,7 @@ export class Game {
   }
 
   private enterLeaderboard(): void {
+    this.leaderboardFrom = this.screen;
     this.screen = 'leaderboard';
     this.leaderboardLoading = true;
     this.leaderboard = [];
@@ -221,7 +224,9 @@ export class Game {
       case 'leaderboard':
         if (hitButton(this.backButtons(), px, py) === 'back') {
           this.audio.coin();
-          this.screen = 'title';
+          // Return to where the board was opened from: after a match that's the
+          // result screen (the player's score) — Main Menu lives there.
+          this.screen = this.leaderboardFrom === 'result' && this.match ? 'result' : 'title';
         }
         break;
     }

@@ -61,7 +61,18 @@ export class NoopAdapter implements TelegramAdapter {
 
   share(text?: string, url?: string): void {
     console.info('[NoopAdapter] share()', text, url);
-    if (url) void navigator.clipboard?.writeText(url).catch(() => {});
+    if (!url) return;
+    // Mobile browsers (incl. Telegram's in-app browser, where challenge links open):
+    // use the native share sheet so the player actually SEES something happen.
+    // Desktop / unsupported: copy the link to the clipboard.
+    const nav = navigator as Navigator & { share?: (d: { text?: string; url: string }) => Promise<void> };
+    if (typeof nav.share === 'function') {
+      void nav.share({ text, url }).catch(() => {
+        void navigator.clipboard?.writeText(url).catch(() => {});
+      });
+      return;
+    }
+    void navigator.clipboard?.writeText(url).catch(() => {});
   }
 
   haptic(kind: HapticKind): void {
