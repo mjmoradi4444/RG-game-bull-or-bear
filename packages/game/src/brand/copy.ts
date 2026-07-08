@@ -21,6 +21,8 @@ export const COPY = {
   // Live matchmaking (lobby + VS screen)
   findingOpponent: 'Finding an opponent',
   lobbyHint: 'You’ll be matched with the next player who picks this level.',
+  reconnecting: 'Reconnecting',
+  mpUnreachable: 'Multiplayer is unreachable right now — please try again.',
   cancel: 'Cancel',
   vsTitle: 'VS',
   startsIn: (s: number): string => `Starting in ${s}…`,

@@ -178,14 +178,42 @@ interface RoundMsg {
 export function attachMatchmaking(server: Server): void {
   const wss = new WebSocketServer({ server, path: '/mm' });
 
+  // Heartbeat: ping every 25s. Keeps reverse-proxy idle timers fed while players
+  // sit in the queue, and reaps dead sockets (their matches resolve as forfeits).
+  const alive = new WeakMap<WebSocket, boolean>();
+  const beat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (alive.get(ws) === false) {
+        ws.terminate(); // close handler runs → dequeue/forfeit
+        continue;
+      }
+      alive.set(ws, false);
+      try {
+        ws.ping();
+      } catch {
+        /* terminate on next beat */
+      }
+    }
+  }, 25_000);
+  wss.on('close', () => clearInterval(beat));
+
   wss.on('connection', (ws) => {
     const player: Player = { ws, uid: null, name: 'Player', match: null, queuedLevel: null };
+    alive.set(ws, true);
+    ws.on('pong', () => alive.set(ws, true));
 
     ws.on('message', (raw) => {
-      let msg: QueueMsg | RoundMsg | { t: 'leave' };
+      alive.set(ws, true); // any traffic proves liveness
+      let msg: QueueMsg | RoundMsg | { t: 'leave' } | { t: 'ping' };
       try {
         msg = JSON.parse(String(raw)) as typeof msg;
       } catch {
+        return;
+      }
+
+      // App-level keepalive from browsers (they can't send protocol pings).
+      if (msg.t === 'ping') {
+        send(ws, { t: 'pong' });
         return;
       }
 

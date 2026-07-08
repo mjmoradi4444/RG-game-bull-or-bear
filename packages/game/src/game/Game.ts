@@ -83,6 +83,11 @@ export class Game {
   private mpMatched: MpMatched | null = null;
   private mpFinal: MpFinal | null = null;
   private mpDropped = false;
+  /** Lobby resilience: auto-retry a dropped queue socket before giving up. */
+  private mpRetries = 0;
+  private mpRetryAt = 0;
+  /** When set, level select shows the "multiplayer unreachable" notice until this pulse. */
+  private mpErrorUntil = 0;
   /** True while the current match is a live matched duel (vs the async link flow). */
   private live = false;
   private vsT = 0;
@@ -113,6 +118,15 @@ export class Game {
     if (this.screen === 'vs' && this.mpMatched) {
       this.vsT += dt;
       if (this.vsT >= VS_SECONDS) this.startLiveMatch();
+    }
+
+    // Lobby resilience: a dropped queue socket retries on a short backoff (proxy
+    // hiccups, flaky mobile radio) before giving up back to level select.
+    if (this.screen === 'lobby' && this.mpRetryAt > 0 && this.pulse >= this.mpRetryAt) {
+      this.mpRetryAt = 0;
+      this.mp?.dispose();
+      this.mp = this.makeMp();
+      this.mp.queue(this.level.id, { gctx: launchGctx(), name: this.adapter.getUser()?.name });
     }
 
     if (this.screen === 'round' && this.match) {
@@ -220,25 +234,33 @@ export class Game {
   }
 
   // ---- live 1-v-1 matchmaking ---------------------------------------------
-  private enterLobby(level: Level): void {
-    this.level = level;
-    this.mpMatched = null;
-    this.mpFinal = null;
-    this.mpDropped = false;
-    this.avatarYou = null;
-    this.avatarOpp = null;
-    this.screen = 'lobby';
-    this.mp?.dispose();
-    this.mp = new Multiplayer({
+  private makeMp(): Multiplayer {
+    return new Multiplayer({
       onMatched: (m) => this.onMpMatched(m),
       onSudden: () => this.onMpSudden(),
       onFinal: (f) => this.onMpFinal(f),
       onDrop: () => this.onMpDrop(),
     });
+  }
+
+  private enterLobby(level: Level): void {
+    this.level = level;
+    this.mpMatched = null;
+    this.mpFinal = null;
+    this.mpDropped = false;
+    this.mpRetries = 0;
+    this.mpRetryAt = 0;
+    this.avatarYou = null;
+    this.avatarOpp = null;
+    this.screen = 'lobby';
+    this.mp?.dispose();
+    this.mp = this.makeMp();
     this.mp.queue(level.id, { gctx: launchGctx(), name: this.adapter.getUser()?.name });
   }
 
   private onMpMatched(m: MpMatched): void {
+    this.mpRetries = 0;
+    this.mpRetryAt = 0;
     this.mpMatched = m;
     this.level = levelById(m.level);
     this.avatarYou = loadAvatar(m.you.avatar);
@@ -280,14 +302,24 @@ export class Game {
 
   private onMpDrop(): void {
     this.mpDropped = true;
-    if (this.screen === 'lobby' || this.screen === 'vs') {
-      // Couldn't queue / lost the lobby — back to level select.
+    if (this.screen === 'lobby') {
+      // Retry the queue a few times (proxy hiccup / flaky mobile radio) before
+      // giving up — never bounce the player out on the first drop.
+      if (this.mpRetries < 3) {
+        this.mpRetries++;
+        this.mpRetryAt = this.pulse + 1.5;
+        return;
+      }
       this.screen = 'levelSelect';
+      this.mpErrorUntil = this.pulse + 6; // level select explains what happened
+      return;
     }
+    if (this.screen === 'vs') this.screen = 'levelSelect';
     // Mid-match: the render shows "connection lost" on the result if no final came.
   }
 
   private leaveLobby(): void {
+    this.mpRetryAt = 0;
     this.mp?.leave();
     this.mp = null;
     this.screen = 'levelSelect';
@@ -653,6 +685,15 @@ export class Game {
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
     ctx.fillText(COPY.chooseLevelHint, cx, h * 0.2 + 24);
 
+    // Transient notice after multiplayer gave up reconnecting.
+    if (this.pulse < this.mpErrorUntil) {
+      ctx.fillStyle = colors.down;
+      ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+      wrapText(ctx, COPY.mpUnreachable, Math.min(w * 0.84, 350)).forEach((ln, i) =>
+        ctx.fillText(ln, cx, h * 0.2 + 46 + i * 16),
+      );
+    }
+
     for (const lv of LEVELS) {
       const r = this.levelCardRect(lv);
       roundRectPath(ctx, r.x, r.y, r.w, r.h, 16);
@@ -729,9 +770,10 @@ export class Game {
     ctx.lineCap = 'butt';
 
     const dots = '.'.repeat(1 + (Math.floor(this.pulse * 2) % 3));
-    ctx.fillStyle = colors.text;
+    const searching = this.mpRetries > 0 ? `${COPY.reconnecting} (${this.mpRetries}/3)` : COPY.findingOpponent;
+    ctx.fillStyle = this.mpRetries > 0 ? colors.rebateGold : colors.text;
     ctx.font = `${fonts.weight.semibold} 16px ${fonts.family}`;
-    ctx.fillText(`${COPY.findingOpponent}${dots}`, cx, h * 0.52);
+    ctx.fillText(`${searching}${dots}`, cx, h * 0.52);
 
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;

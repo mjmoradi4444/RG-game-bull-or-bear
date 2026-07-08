@@ -57,6 +57,7 @@ function wsUrl(): string {
 export class Multiplayer {
   private ws: WebSocket | null = null;
   private finished = false;
+  private keepalive: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly handlers: MpHandlers) {}
 
@@ -79,6 +80,8 @@ export class Multiplayer {
         gctx: identity.gctx ?? undefined,
         name: identity.name ?? undefined,
       });
+      // App-level keepalive so proxy idle timers never reap a quiet queue/match.
+      this.keepalive = setInterval(() => this.send({ t: 'ping' }), 20_000);
     };
     ws.onmessage = (ev) => {
       let m: { t?: string } & Record<string, unknown>;
@@ -116,6 +119,10 @@ export class Multiplayer {
   }
 
   dispose(): void {
+    if (this.keepalive !== null) {
+      clearInterval(this.keepalive);
+      this.keepalive = null;
+    }
     if (this.ws) {
       const w = this.ws;
       this.ws = null;
