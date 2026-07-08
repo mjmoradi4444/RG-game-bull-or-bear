@@ -295,7 +295,17 @@ Before announcing:
 
 ---
 
-## 7. Multiplayer (Challenge a Friend) — what it really does
+## 7. Multiplayer — what it really does
+
+> **UPDATE (July 2026):** Multiplayer is now a **live 1-v-1 mode** with server
+> matchmaking over **plain HTTP polling** on `/mm/*` (same origin as `/score`) — no
+> WebSocket, **no reverse-proxy configuration needed**. Players who pick the same
+> level are paired (identical charts via a server seed) and see a VS screen with
+> both Telegram profiles. Ties go to sudden-death rounds (max 3), then total
+> decision time. If no human appears within ~6–10s, an **AI opponent** with a
+> human-like name fills the seat so the mode always works; two humans always match
+> each other first. A silent mid-match player forfeits after ~30s. The sections
+> below describe the older async challenge links, which still work.
 
 Two modes:
 

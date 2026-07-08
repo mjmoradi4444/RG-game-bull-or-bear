@@ -1,13 +1,17 @@
 import type { LevelId } from '../game/levels';
 
 /**
- * Client for the live 1-v-1 matchmaking WebSocket (bot server, path /mm).
+ * Client for live 1-v-1 matchmaking over PLAIN HTTP POLLING (bot server, /mm/*).
  *
- * Pure networking — no Telegram imports, no engine imports. The Game drives it:
- * queue(level) → onMatched (seed + both profiles for the VS screen) → sendRound()
- * per round → onSudden (tie → extra round) → onFinal (winner). Identity: the signed
- * game context from the URL hash when launched from the bot (server verifies it and
- * resolves the real Telegram name/avatar), else a display-name fallback.
+ * No WebSocket on purpose: the game must work behind reverse proxies the operator
+ * may not control, and small same-origin JSON requests (the same transport as
+ * /score) provably pass them. The client polls /mm/state every ~1.5s and diffs the
+ * response into events: onMatched (seed + both profiles for the VS screen) →
+ * sendRound() per round → onSudden (tie → extra round) → onFinal (winner).
+ *
+ * Pure networking — no Telegram imports, no engine imports. Identity: the signed
+ * game context from the URL hash when launched from the bot (server resolves the
+ * real Telegram name/avatar), else a display-name fallback.
  */
 export interface MpProfile {
   name: string;
@@ -38,7 +42,7 @@ export interface MpHandlers {
   onOppRound?: (n: number, correct: boolean) => void;
   onSudden?: (round: number) => void;
   onFinal?: (f: MpFinal) => void;
-  /** Socket dropped/errored before a final was delivered. */
+  /** Transport gave up (repeated request failures) before a final was delivered. */
   onDrop?: () => void;
 }
 
@@ -50,97 +54,149 @@ export function apiBase(): string {
   return API_BASE || window.location.origin;
 }
 
-function wsUrl(): string {
-  return `${apiBase().replace(/^http/, 'ws')}/mm`;
+const POLL_MS = 1500;
+/** Consecutive poll failures tolerated before reporting a drop (~4.5s of outage). */
+const MAX_FAILURES = 3;
+
+interface StateResponse {
+  ok: boolean;
+  state?: 'queued' | 'matched';
+  matchId?: string;
+  seed?: number;
+  level?: LevelId;
+  expect?: number;
+  you?: MpProfile;
+  opp?: MpProfile;
+  oppRounds?: Array<{ n: number; correct: boolean }>;
+  final?: MpFinal | null;
 }
 
 export class Multiplayer {
-  private ws: WebSocket | null = null;
+  private pid: string | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private failures = 0;
+  private matched = false;
   private finished = false;
-  private keepalive: ReturnType<typeof setInterval> | null = null;
+  private lastExpect = 0;
+  private seenOppRounds = 0;
 
   constructor(private readonly handlers: MpHandlers) {}
 
-  /** Connect and enter the queue for a level. */
+  /** Join the queue for a level; polling starts once the server accepts. */
   queue(level: LevelId, identity: { gctx?: string | null; name?: string | null }): void {
     this.dispose();
     this.finished = false;
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(wsUrl());
-    } catch {
-      this.handlers.onDrop?.();
-      return;
-    }
-    this.ws = ws;
-    ws.onopen = () => {
-      this.send({
-        t: 'queue',
+    this.matched = false;
+    this.failures = 0;
+    this.lastExpect = 0;
+    this.seenOppRounds = 0;
+    void fetch(`${apiBase()}/mm/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         level,
         gctx: identity.gctx ?? undefined,
         name: identity.name ?? undefined,
+      }),
+    })
+      .then(async (r) => {
+        const d = (await r.json()) as { ok: boolean; pid?: string };
+        if (!d.ok || !d.pid) throw new Error('queue rejected');
+        this.pid = d.pid;
+        this.handlers.onQueued?.();
+        this.timer = setInterval(() => void this.poll(), POLL_MS);
+        void this.poll(); // immediate first check (humans may match instantly)
+      })
+      .catch(() => {
+        if (!this.finished) this.handlers.onDrop?.();
       });
-      // App-level keepalive so proxy idle timers never reap a quiet queue/match.
-      this.keepalive = setInterval(() => this.send({ t: 'ping' }), 20_000);
-    };
-    ws.onmessage = (ev) => {
-      let m: { t?: string } & Record<string, unknown>;
-      try {
-        m = JSON.parse(String(ev.data)) as typeof m;
-      } catch {
-        return;
+  }
+
+  private async poll(): Promise<void> {
+    if (!this.pid || this.finished) return;
+    let st: StateResponse;
+    try {
+      const r = await fetch(`${apiBase()}/mm/state?pid=${encodeURIComponent(this.pid)}`);
+      st = (await r.json()) as StateResponse;
+    } catch {
+      if (++this.failures >= MAX_FAILURES && !this.finished) {
+        this.stopPolling();
+        this.handlers.onDrop?.();
       }
-      if (m.t === 'queued') this.handlers.onQueued?.();
-      else if (m.t === 'matched') this.handlers.onMatched?.(m as unknown as MpMatched);
-      else if (m.t === 'opp') this.handlers.onOppRound?.(Number(m.n), m.correct === true);
-      else if (m.t === 'sudden') this.handlers.onSudden?.(Number(m.round));
-      else if (m.t === 'final') {
-        this.finished = true;
-        this.handlers.onFinal?.(m as unknown as MpFinal);
+      return;
+    }
+    this.failures = 0;
+    if (!st.ok) {
+      // Server no longer knows us (restart / reaped) — treat as a drop.
+      if (!this.finished) {
+        this.stopPolling();
+        this.handlers.onDrop?.();
       }
-    };
-    ws.onclose = () => {
-      if (!this.finished) this.handlers.onDrop?.();
-    };
-    ws.onerror = () => {
-      /* onclose follows and reports the drop */
-    };
+      return;
+    }
+    if (st.state !== 'matched') return;
+
+    if (!this.matched && st.seed && st.you && st.opp && st.level) {
+      this.matched = true;
+      this.lastExpect = st.expect ?? 0;
+      this.handlers.onMatched?.({
+        matchId: st.matchId ?? '',
+        seed: st.seed,
+        level: st.level,
+        you: st.you,
+        opp: st.opp,
+      });
+    }
+    const oppRounds = st.oppRounds ?? [];
+    if (oppRounds.length > this.seenOppRounds) {
+      for (const r of oppRounds.slice(this.seenOppRounds)) this.handlers.onOppRound?.(r.n, r.correct);
+      this.seenOppRounds = oppRounds.length;
+    }
+    if ((st.expect ?? 0) > this.lastExpect && this.lastExpect > 0) {
+      this.lastExpect = st.expect!;
+      this.handlers.onSudden?.(st.expect!);
+    }
+    if (st.final && !this.finished) {
+      this.finished = true;
+      this.stopPolling();
+      this.handlers.onFinal?.(st.final);
+    }
   }
 
   sendRound(n: number, correct: boolean, ms: number): void {
-    this.send({ t: 'round', n, correct, ms: Math.round(ms) });
+    if (!this.pid) return;
+    void fetch(`${apiBase()}/mm/round`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid: this.pid, n, correct, ms: Math.round(ms) }),
+    }).catch(() => {
+      /* next poll surfaces persistent outages */
+    });
   }
 
-  /** Leave the queue (before a match starts). */
+  /** Leave the queue / abandon the match (deliberate exit — no drop event). */
   leave(): void {
-    this.send({ t: 'leave' });
-    this.finished = true; // deliberate exit — don't report a drop
-    this.dispose();
+    this.finished = true;
+    this.stopPolling();
+    if (this.pid) {
+      void fetch(`${apiBase()}/mm/leave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid: this.pid }),
+      }).catch(() => {});
+      this.pid = null;
+    }
   }
 
   dispose(): void {
-    if (this.keepalive !== null) {
-      clearInterval(this.keepalive);
-      this.keepalive = null;
-    }
-    if (this.ws) {
-      const w = this.ws;
-      this.ws = null;
-      w.onclose = null;
-      w.onerror = null;
-      try {
-        w.close();
-      } catch {
-        /* already closed */
-      }
-    }
+    this.stopPolling();
+    this.pid = null;
   }
 
-  private send(m: unknown): void {
-    try {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
-    } catch {
-      /* drop handled by onclose */
+  private stopPolling(): void {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
   }
 }

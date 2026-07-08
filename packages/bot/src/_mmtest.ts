@@ -1,134 +1,135 @@
-import WebSocket from 'ws';
+/**
+ * Fake-clients E2E for the HTTP-polling matchmaking (run against a local server
+ * started with shrunken bot pacing, e.g.:
+ *   BOT_TOKEN= PORT=8082 SCORE_SECRET=devsecret MM_BOT_FILL_MS=600 MM_BOT_JITTER_MS=1 \
+ *   MM_BOT_ROUND_MS=150 MM_BOT_ROUND_JITTER_MS=100 npm start
+ */
+const BASE = process.env.MM_BASE ?? 'http://localhost:8082';
 
-/** Fake-clients E2E for the matchmaking server (run against localhost). */
-const URL = 'ws://localhost:8081/mm';
+const BOT_NAMES = ['Alex', 'Nova', 'Marcus', 'Leila', 'Yuki', 'Omar', 'Petra', 'Dario', 'Mina', 'Tomas'];
 
-interface Msg {
-  t: string;
-  [k: string]: unknown;
+interface State {
+  ok: boolean;
+  state?: string;
+  seed?: number;
+  expect?: number;
+  you?: { name: string; avatar: string | null };
+  opp?: { name: string; avatar: string | null };
+  final?: {
+    winner: string;
+    onTime?: boolean;
+    forfeit?: boolean;
+    sudden?: number;
+    you: { score: number; ms: number };
+  } | null;
 }
 
-function client(name: string): {
-  ws: WebSocket;
-  next: (type: string, timeoutMs?: number) => Promise<Msg>;
-  send: (m: unknown) => void;
-} {
-  const ws = new WebSocket(URL);
-  const inbox: Msg[] = [];
-  const waiters: Array<{ type: string; res: (m: Msg) => void }> = [];
-  ws.on('message', (raw) => {
-    const m = JSON.parse(String(raw)) as Msg;
-    const wi = waiters.findIndex((w) => w.type === m.t);
-    if (wi >= 0) waiters.splice(wi, 1)[0]!.res(m);
-    else inbox.push(m);
+async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
-  return {
-    ws,
-    send: (m) => ws.send(JSON.stringify(m)),
-    next: (type, timeoutMs = 5000) =>
-      new Promise((res, rej) => {
-        const qi = inbox.findIndex((m) => m.t === type);
-        if (qi >= 0) return res(inbox.splice(qi, 1)[0]!);
-        const timer = setTimeout(() => rej(new Error(`${name}: timeout waiting for '${type}'`)), timeoutMs);
-        waiters.push({ type, res: (m) => { clearTimeout(timer); res(m); } });
-      }),
-  };
+  return (await r.json()) as Record<string, unknown>;
 }
 
-const open = (ws: WebSocket) => new Promise<void>((r) => ws.on('open', () => r()));
+async function queue(level: string, name: string): Promise<string> {
+  const d = await post('/mm/queue', { level, name });
+  if (!d.ok || typeof d.pid !== 'string') throw new Error(`queue failed: ${JSON.stringify(d)}`);
+  return d.pid;
+}
+
+async function state(pid: string): Promise<State> {
+  const r = await fetch(`${BASE}/mm/state?pid=${pid}`);
+  return (await r.json()) as State;
+}
+
+async function waitFor(pid: string, pred: (s: State) => boolean, what: string, ms = 8000): Promise<State> {
+  const t0 = Date.now();
+  for (;;) {
+    const s = await state(pid);
+    if (pred(s)) return s;
+    if (Date.now() - t0 > ms) throw new Error(`timeout waiting for ${what}: ${JSON.stringify(s)}`);
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
+const round = (pid: string, n: number, correct: boolean, ms: number) =>
+  post('/mm/round', { pid, n, correct, ms });
 
 async function main(): Promise<void> {
-  // ---- 1) queue → matched, same seed, profiles exchanged -------------------
-  const a = client('A');
-  const b = client('B');
-  await Promise.all([open(a.ws), open(b.ws)]);
-  a.send({ t: 'queue', level: 'pro', name: 'Alice' });
-  await a.next('queued');
-  b.send({ t: 'queue', level: 'pro', name: 'Bob' });
-  const [ma, mb] = await Promise.all([a.next('matched'), b.next('matched')]);
-  if (ma.seed !== mb.seed) throw new Error('seeds differ');
-  const aOpp = (ma.opp as { name: string }).name;
-  const bOpp = (mb.opp as { name: string }).name;
-  if (aOpp !== 'Bob' || bOpp !== 'Alice') throw new Error(`profiles wrong: ${aOpp}/${bOpp}`);
-  console.log(`1) matched OK · seed=${ma.seed} · A sees ${aOpp}, B sees ${bOpp}`);
+  // 1) two humans, same level → matched, same seed, crossed profiles
+  const a = await queue('pro', 'Alice');
+  let sa = await state(a);
+  if (sa.state !== 'queued') throw new Error('A should be queued');
+  const b = await queue('pro', 'Bob');
+  sa = await waitFor(a, (s) => s.state === 'matched', 'A matched');
+  const sb = await waitFor(b, (s) => s.state === 'matched', 'B matched');
+  if (sa.seed !== sb.seed) throw new Error('seeds differ');
+  if (sa.opp!.name !== 'Bob' || sb.opp!.name !== 'Alice') throw new Error('profiles wrong');
+  console.log(`1) humans matched · seed=${sa.seed} · A↔${sa.opp!.name}, B↔${sb.opp!.name}`);
 
-  // ---- 2) app-level keepalive ----------------------------------------------
-  a.send({ t: 'ping' });
-  await a.next('pong');
-  console.log('2) ping → pong OK');
-
-  // ---- 3) both report 5 rounds TIED (3-3... use 2 correct each), times differ
+  // 2) 2-2 tie → sudden round 6 → A takes it 3-2
   for (let n = 1; n <= 5; n++) {
-    a.send({ t: 'round', n, correct: n <= 2, ms: 3000 }); // Alice: 2 correct, 15s total
-    b.send({ t: 'round', n, correct: n >= 4, ms: 5000 }); // Bob:   2 correct, 25s total
+    await round(a, n, n <= 2, 3000);
+    await round(b, n, n >= 4, 5000);
   }
-  const [sa, sb] = await Promise.all([a.next('sudden'), b.next('sudden')]);
-  if (sa.round !== 6 || sb.round !== 6) throw new Error('sudden round != 6');
-  console.log('3) 2-2 tie → SUDDEN DEATH round 6 on both clients OK');
+  await waitFor(a, (s) => (s.expect ?? 0) === 6, 'sudden death');
+  console.log('2) 2-2 tie → SUDDEN DEATH round 6');
+  await round(a, 6, true, 4000);
+  await round(b, 6, false, 4000);
+  const fa = (await waitFor(a, (s) => !!s.final, 'A final')).final!;
+  const fb = (await waitFor(b, (s) => !!s.final, 'B final')).final!;
+  if (fa.winner !== 'you' || fb.winner !== 'opp' || fa.you.score !== 3) throw new Error('sudden verdict wrong');
+  console.log(`3) sudden death → A wins 3-2 (sudden=${fa.sudden})`);
 
-  // ---- 4) sudden death decides it ------------------------------------------
-  a.send({ t: 'round', n: 6, correct: true, ms: 4000 });
-  b.send({ t: 'round', n: 6, correct: false, ms: 4000 });
-  const [fa, fb] = await Promise.all([a.next('final'), b.next('final')]);
-  if (fa.winner !== 'you' || fb.winner !== 'opp') throw new Error(`wrong winner: ${fa.winner}/${fb.winner}`);
-  if ((fa.you as { score: number }).score !== 3) throw new Error('score wrong');
-  console.log(`4) sudden death → A wins 3-2 OK (sudden=${fa.sudden})`);
-  a.ws.close();
-  b.ws.close();
-
-  // ---- 5) still tied after sudden → time decides ----------------------------
-  const c = client('C');
-  const d = client('D');
-  await Promise.all([open(c.ws), open(d.ws)]);
-  c.send({ t: 'queue', level: 'whale', name: 'Cleo' });
-  d.send({ t: 'queue', level: 'whale', name: 'Dan' });
-  await Promise.all([c.next('matched'), d.next('matched')]);
-  // 5 rounds tied; then 3 sudden rounds ALSO tied → time tiebreak (C faster)
+  // 3) tied through all sudden rounds → time decides
+  const c = await queue('whale', 'Cleo');
+  const d = await queue('whale', 'Dan');
+  await waitFor(c, (s) => s.state === 'matched', 'C matched');
   for (let n = 1; n <= 5; n++) {
-    c.send({ t: 'round', n, correct: n === 1, ms: 2000 });
-    d.send({ t: 'round', n, correct: n === 1, ms: 9000 });
+    await round(c, n, n === 1, 2000);
+    await round(d, n, n === 1, 9000);
   }
   for (let n = 6; n <= 8; n++) {
-    await Promise.all([c.next('sudden'), d.next('sudden')]);
-    c.send({ t: 'round', n, correct: true, ms: 2000 });
-    d.send({ t: 'round', n, correct: true, ms: 9000 });
+    await waitFor(c, (s) => (s.expect ?? 0) === n, `sudden ${n}`);
+    await round(c, n, true, 2000);
+    await round(d, n, true, 9000);
   }
-  const [fc, fd] = await Promise.all([c.next('final'), d.next('final')]);
+  const fc = (await waitFor(c, (s) => !!s.final, 'C final')).final!;
   if (fc.winner !== 'you' || fc.onTime !== true) throw new Error(`time tiebreak wrong: ${JSON.stringify(fc)}`);
-  if (fd.winner !== 'opp') throw new Error('D should lose on time');
-  console.log('5) tied through 3 sudden rounds → decided on TIME (faster wins) OK');
-  c.ws.close();
-  d.ws.close();
+  console.log('4) tied through 3 sudden rounds → decided on TIME (faster wins)');
 
-  // ---- 6) forfeit: opponent disconnects mid-match ---------------------------
-  const e = client('E');
-  const f = client('F');
-  await Promise.all([open(e.ws), open(f.ws)]);
-  e.send({ t: 'queue', level: 'retail', name: 'Eve' });
-  f.send({ t: 'queue', level: 'retail', name: 'Fred' });
-  await Promise.all([e.next('matched'), f.next('matched')]);
-  e.send({ t: 'round', n: 1, correct: true, ms: 1000 });
-  f.ws.close(); // Fred rage-quits
-  const fe = await e.next('final');
+  // 4) leave mid-match → other side wins by forfeit
+  const e = await queue('retail', 'Eve');
+  const f = await queue('retail', 'Fred');
+  await waitFor(e, (s) => s.state === 'matched', 'E matched');
+  await round(e, 1, true, 1000);
+  await post('/mm/leave', { pid: f });
+  const fe = (await waitFor(e, (s) => !!s.final, 'E final')).final!;
   if (fe.winner !== 'you' || fe.forfeit !== true) throw new Error(`forfeit wrong: ${JSON.stringify(fe)}`);
-  console.log('6) opponent disconnect → win by forfeit OK');
-  e.ws.close();
+  console.log('5) opponent leave → win by forfeit');
 
-  // ---- 7) cancel: leave the queue -------------------------------------------
-  const g = client('G');
-  await open(g.ws);
-  g.send({ t: 'queue', level: 'pro', name: 'Gil' });
-  await g.next('queued');
-  g.send({ t: 'leave' });
-  await g.next('left');
-  console.log('7) queue → cancel (leave) OK');
-  g.ws.close();
+  // 5) alone in the queue → AI opponent fills in, plays, and a final arrives
+  const g = await queue('pro', 'Gil');
+  const sg = await waitFor(g, (s) => s.state === 'matched', 'bot fill', 6000);
+  if (!BOT_NAMES.includes(sg.opp!.name)) throw new Error(`unexpected bot name: ${sg.opp!.name}`);
+  if (sg.opp!.avatar !== null) throw new Error('bot avatar should be null');
+  console.log(`6) bot fill OK → matched with AI "${sg.opp!.name}" · seed=${sg.seed}`);
+  for (let n = 1; n <= 5; n++) await round(g, n, n % 2 === 0, 3000);
+  const fg = (await waitFor(g, (s) => !!s.final, 'G final vs bot', 20000)).final!;
+  console.log(`7) bot match resolved → winner=${fg.winner} (you ${fg.you.score})${fg.sudden ? ` after ${fg.sudden} sudden` : ''}`);
 
-  console.log('\nALL MATCHMAKING TESTS PASSED ✅');
+  // 6) unknown pid → ok:false (client treats as drop)
+  const su = await state('deadbeef');
+  if (su.ok !== false) throw new Error('unknown pid should be ok:false');
+  console.log('8) unknown pid → ok:false');
+
+  console.log('\nALL MATCHMAKING (HTTP) TESTS PASSED ✅');
   process.exit(0);
 }
 
 main().catch((e) => {
-  console.error('FAIL:', e.message);
+  console.error('FAIL:', e instanceof Error ? e.message : e);
   process.exit(1);
 });

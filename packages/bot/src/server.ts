@@ -8,7 +8,7 @@ import { bot } from './bot';
 import { clampScore, rateLimit, verifyContext } from './security';
 import { submitGameScore } from './telegram';
 import { recordScore, topScores } from './leaderboard';
-import { attachMatchmaking } from './matchmaking';
+import { handleMatchmaking } from './matchmaking';
 
 // Signed launch tokens are accepted for 30 min (one match + browsing), not 24h —
 // tightens the replay window since the token rides in the game URL fragment.
@@ -86,6 +86,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     send(res, 200, { ok: true });
     return;
   }
+
+  // Live 1-v-1 matchmaking (plain HTTP polling — proxy-proof; see matchmaking.ts).
+  if (await handleMatchmaking(req, res, url, config.allowOrigin)) return;
 
   if (req.method === 'POST' && url.pathname === '/score') {
     const data = JSON.parse((await readBody(req)) || '{}') as { gctx?: string; score?: number };
@@ -165,6 +168,5 @@ export function startServer(): void {
       send(res, 500, { ok: false, error: 'server_error' });
     });
   });
-  attachMatchmaking(server); // live 1-v-1 duels over WebSocket (/mm)
-  server.listen(config.port, () => console.log(`[bot] score API on :${config.port}`));
+  server.listen(config.port, () => console.log(`[bot] score API + matchmaking on :${config.port}`));
 }
