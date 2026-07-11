@@ -23,6 +23,7 @@ export const COPY = {
   lobbyHint: 'You’ll be matched with the next player who picks this level.',
   reconnecting: 'Reconnecting',
   mpUnreachable: 'Multiplayer is unreachable right now — please try again.',
+  lbError: 'Couldn’t load the leaderboard — reopen the game from the Play button and try again.',
   cancel: 'Cancel',
   vsTitle: 'VS',
   startsIn: (s: number): string => `Starting in ${s}…`,

@@ -10,9 +10,13 @@ import { submitGameScore } from './telegram';
 import { recordScore, topScores } from './leaderboard';
 import { handleMatchmaking } from './matchmaking';
 
-// Signed launch tokens are accepted for 30 min (one match + browsing), not 24h —
-// tightens the replay window since the token rides in the game URL fragment.
-const SCORE_TTL_MS = 30 * 60 * 1000;
+// Signed launch tokens: score WRITES stay bounded (replay window), but generous
+// enough that a long play session doesn't silently lose its score — the original
+// 30-min window expired mid-session, which showed up as "the leaderboard stopped
+// working" while everything else (12h matchmaking auth) kept going. Board READS are
+// harmless (the same rows are shown to every player), so they get the longer TTL.
+const SCORE_TTL_MS = 3 * 60 * 60 * 1000;
+const READ_TTL_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Minimal HTTP API the frontend calls (SPEC §5.2):
@@ -107,7 +111,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === 'GET' && url.pathname === '/highscores') {
-    const ctx = verifyContext(url.searchParams.get('gctx') ?? '', SCORE_TTL_MS);
+    const ctx = verifyContext(url.searchParams.get('gctx') ?? '', READ_TTL_MS);
     if (!ctx) return send(res, 401, { ok: false, error: 'bad_context' });
     const scores = topScores().map((e, i) => ({ rank: i + 1, name: e.name, score: e.score, isSelf: e.u === ctx.u }));
     return send(res, 200, { ok: true, scores });

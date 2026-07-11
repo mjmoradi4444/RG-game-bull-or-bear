@@ -64,6 +64,7 @@ export class Game {
 
   private leaderboard: LeaderEntry[] = [];
   private leaderboardLoading = false;
+  private leaderboardError = false;
   /** Where the leaderboard was opened from, so Back returns there (result vs title). */
   private leaderboardFrom: Screen = 'title';
 
@@ -339,7 +340,13 @@ export class Game {
   private enterLeaderboard(): void {
     this.leaderboardFrom = this.screen;
     this.screen = 'leaderboard';
+    this.loadLeaderboard(true);
+  }
+
+  /** Fetch the board; one silent retry on failure, then a visible error state. */
+  private loadLeaderboard(retryOnce: boolean): void {
     this.leaderboardLoading = true;
+    this.leaderboardError = false;
     this.leaderboard = [];
     this.adapter
       .getLeaderboard()
@@ -348,7 +355,14 @@ export class Game {
         this.leaderboardLoading = false;
       })
       .catch(() => {
+        if (retryOnce) {
+          setTimeout(() => {
+            if (this.screen === 'leaderboard') this.loadLeaderboard(false);
+          }, 1200);
+          return;
+        }
         this.leaderboardLoading = false;
+        this.leaderboardError = true;
       });
   }
 
@@ -1021,7 +1035,13 @@ export class Game {
     let y = h * 0.22;
     const rowH = 42;
 
-    if (this.leaderboardLoading || this.leaderboard.length === 0) {
+    if (this.leaderboardError) {
+      ctx.fillStyle = colors.down;
+      ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+      wrapText(ctx, COPY.lbError, Math.min(w * 0.82, 340)).forEach((ln, i) =>
+        ctx.fillText(ln, cx, y + 30 + i * 18),
+      );
+    } else if (this.leaderboardLoading || this.leaderboard.length === 0) {
       ctx.fillStyle = colors.textMuted;
       ctx.font = `${fonts.weight.medium} 14px ${fonts.family}`;
       ctx.fillText(this.leaderboardLoading ? 'Loading…' : 'No scores yet.', cx, y + 30);

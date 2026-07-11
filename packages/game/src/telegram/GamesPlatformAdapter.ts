@@ -42,17 +42,15 @@ export class GamesPlatformAdapter implements TelegramAdapter {
 
   async getLeaderboard(): Promise<LeaderEntry[]> {
     if (!this.tgctx) return [];
-    try {
-      const res = await fetch(`${SCORE_API}/highscores?gctx=${encodeURIComponent(this.tgctx)}`);
-      const data = (await res.json()) as {
-        ok: boolean;
-        scores?: Array<{ rank: number; name: string; score: number; isSelf: boolean }>;
-      };
-      if (!data.ok || !data.scores) return [];
-      return data.scores.map((s) => ({ rank: s.rank, name: s.name, score: s.score, isSelf: s.isSelf }));
-    } catch {
-      return [];
-    }
+    // Throw on failure (network / expired token) so the UI can show a real error —
+    // a swallowed failure used to render as a misleading "No scores yet."
+    const res = await fetch(`${SCORE_API}/highscores?gctx=${encodeURIComponent(this.tgctx)}`);
+    const data = (await res.json()) as {
+      ok: boolean;
+      scores?: Array<{ rank: number; name: string; score: number; isSelf: boolean }>;
+    };
+    if (!data.ok || !data.scores) throw new Error('highscores unavailable');
+    return data.scores.map((s) => ({ rank: s.rank, name: s.name, score: s.score, isSelf: s.isSelf }));
   }
 
   share(text?: string, url?: string): void {
