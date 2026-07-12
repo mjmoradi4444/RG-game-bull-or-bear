@@ -173,7 +173,7 @@ Frontend: TS + Vite + Canvas2D (no new framework). Backend: grammY + TS. Hosting
 ## 8. Telegram integration
 - Path A (Games platform) for the contest **and** Path B (Mini App) wired behind a flag — Mini App is the better home for deep-link challenges (`start_param`/`startapp`) and is recommended as the primary for the async duel; keep Games-platform score submission working too. All platform calls go through `TelegramAdapter`.
 - Reuse the grammY `/score`+`/highscores` flow; add the match endpoints (§4.5). `BOT_TOKEN` server-side only.
-- **Security note for the README (do not print the token in replies):** the bot token for `@SpreadShrinker_bot` was pasted into a chat transcript — **regenerate it via BotFather (`/token`) before production** and keep it only in `bot/.env` (git-ignored).
+- **Security note for the README (do not print the token in replies):** the bot token for `@RebateGainGames_bot` was pasted into a chat transcript — **regenerate it via BotFather (`/token`) before production** and keep it only in `bot/.env` (git-ignored).
 
 ---
 
