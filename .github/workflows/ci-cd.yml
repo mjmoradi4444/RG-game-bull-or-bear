@@ -67,7 +67,6 @@ jobs:
             cd "${{ secrets.DEPLOY_PATH }}"
             git fetch --all --prune
             git reset --hard origin/main
-            sed -i 's/^BOT_TOKEN=.*/BOT_TOKEN=8583223035:AAFjwPcB_0vfxXwvjT-FTmKPbApI7-vns6M/' packages/bot/.env
             npm ci
             npm run build -w @rebate-rush/game
             pm2 restart "${{ env.PM2_NAME }}" --update-env \
