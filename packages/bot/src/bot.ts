@@ -4,7 +4,9 @@ import { signContext } from './security';
 
 /**
  * The grammY bot for the Telegram Games platform (SPEC §5.2):
- *   /start        → send the game card (Play button)
+ *   /start        → send the game card (Play button) — fired the instant an ad-clicker
+ *                   opens the bot, so they see Play immediately (no blank screen)
+ *   /play         → same as /start; the command shown in the menu / command list
  *   inline_query  → share the game into any chat (inline mode is mandatory for games)
  *   Play tapped   → answer the callback with the game URL + a signed launch context
  */
@@ -13,9 +15,14 @@ export const bot = config.botToken ? new Bot(config.botToken) : null;
 
 bot?.catch((err) => console.error('[bot] error:', err.error));
 
-bot?.command('start', async (ctx) => {
-  await ctx.replyWithGame(config.gameShortName);
-});
+/** Send the game card (green Play button). Shared by /start and /play. */
+const sendGame = (ctx: { replyWithGame: (n: string) => Promise<unknown> }) =>
+  ctx.replyWithGame(config.gameShortName);
+
+// /start fires immediately on first open — critical for Telegram Ads: an ad-clicker
+// must land on the Play button, not an empty chat.
+bot?.command('start', sendGame);
+bot?.command('play', sendGame);
 
 bot?.on('inline_query', async (ctx) => {
   await ctx.answerInlineQuery([{ type: 'game', id: 'bob', game_short_name: config.gameShortName }], {

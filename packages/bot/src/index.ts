@@ -14,6 +14,11 @@ async function main(): Promise<void> {
     return;
   }
   const me = await bot.api.getMe();
+  // Publish the command list so /play shows in the menu button (no manual /setcommands).
+  await bot.api.setMyCommands([
+    { command: 'play', description: 'Play Bull or Bear' },
+    { command: 'start', description: 'Open the game' },
+  ]);
   console.log(`[bot] @${me.username} ready · game "${config.gameShortName}"`);
   await bot.start({ drop_pending_updates: true });
 }

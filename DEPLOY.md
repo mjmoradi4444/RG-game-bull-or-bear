@@ -83,7 +83,7 @@ Message [@BotFather](https://t.me/BotFather):
 2. `/setinline` → select the bot → turn inline mode **on**. Mandatory for Telegram
    games; sharing won't work without it.
 3. `/newgame` → select the bot → set a title (`Bull or Bear`), a short description, a
-   640×360 image, and a **short name**: exactly `bullorbear`.
+   640×360 image, and a **short name**: exactly `bull_or_bear`.
    This must match `GAME_SHORT_NAME` in your env, or the Play button won't work.
 
 ---
@@ -94,7 +94,7 @@ Create `packages/bot/.env` from the template `packages/bot/.env.example`:
 
 ```env
 BOT_TOKEN=<fresh-token-from-BotFather>
-GAME_SHORT_NAME=bullorbear
+GAME_SHORT_NAME=bull_or_bear
 GAME_URL=https://game.example.com        # public HTTPS URL of THIS service
 SCORE_SECRET=<output of: openssl rand -hex 32>
 PORT=8090
@@ -277,7 +277,7 @@ it's already on `PATH` and nothing extra is needed.
 Before announcing:
 
 - [ ] Bot token is **fresh** (`/token`) and only in the server `.env`.
-- [ ] `/setinline` is on and `/newgame` registered with short name exactly `bullorbear`.
+- [ ] `/setinline` is on and `/newgame` registered with short name exactly `bull_or_bear`.
 - [ ] `SCORE_SECRET` set from `openssl rand -hex 32`.
 - [ ] `npm run build -w @rebate-rush/game` succeeded and `packages/game/dist` exists.
 - [ ] Domain has HTTPS; `https://<domain>/health` returns `{"ok":true}`.
@@ -376,7 +376,7 @@ These are things I found reading the source that the other docs gloss over:
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Play button does nothing | `GAME_URL` must be valid HTTPS; bot must be running; check the short name in BotFather matches `bullorbear` |
+| Play button does nothing | `GAME_URL` must be valid HTTPS; bot must be running; check the short name in BotFather matches `bull_or_bear` |
 | Quick Play score not saved | The game must be opened from inside Telegram (the Play button, so `#tgctx` is present); don't change `SCORE_SECRET` between restarts |
 | Share sends nothing | `/setinline` must be on; outside Telegram, Share copies the link to the clipboard instead |
 | Challenge link shows a different game | The link must be sent intact — the `?startapp=duel_…` / seed param must not be stripped |

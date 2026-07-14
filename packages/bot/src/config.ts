@@ -11,7 +11,10 @@ function required(name: string): string {
  *  (server-only dev mode) without Telegram; production must set both. */
 export const config = {
   botToken: process.env.BOT_TOKEN ?? '',
-  gameShortName: process.env.GAME_SHORT_NAME ?? 'bullorbear',
+  // Hardcoded (not env-driven) so a stale GAME_SHORT_NAME in the server .env can't
+  // reintroduce the old value. Must exactly match the short name registered in
+  // BotFather via /newgame.
+  gameShortName: 'bull_or_bear',
   gameUrl: process.env.GAME_URL ?? 'http://localhost:8080',
   scoreSecret: required('SCORE_SECRET'),
   port: Number(process.env.PORT ?? 8080),

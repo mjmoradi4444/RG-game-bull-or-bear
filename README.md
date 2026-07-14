@@ -57,10 +57,10 @@ token server-side (the browser never sees `BOT_TOKEN`).
 **BotFather setup (one-time):**
 1. `/newbot` → create the bot, get its token.
 2. `/setinline` → enable inline mode (mandatory for games).
-3. `/newgame` → set title, description, photo, and the **short name** (`bullorbear`).
+3. `/newgame` → set title, description, photo, and the **short name** (`bull_or_bear`).
 
 **Env** — `packages/bot/.env` (git-ignored; copy from `.env.example`):
-`BOT_TOKEN` (never commit — regenerate via BotFather if leaked) · `GAME_SHORT_NAME=bullorbear` ·
+`BOT_TOKEN` (never commit — regenerate via BotFather if leaked) · `GAME_SHORT_NAME=bull_or_bear` ·
 `GAME_URL` (public HTTPS URL hosting `packages/game`) · `SCORE_SECRET` (HMAC key) ·
 `PORT` · `ALLOW_ORIGIN`. The game build reads `VITE_SCORE_API` (the bot's URL).
 

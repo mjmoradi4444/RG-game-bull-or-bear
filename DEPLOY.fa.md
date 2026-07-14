@@ -42,7 +42,7 @@
 2. `/setinline` → ربات را انتخاب کنید و inline mode را **روشن** کنید.
    برای بازی‌های تلگرام اجباری است و بدون آن اشتراک‌گذاری بازی کار نمی‌کند.
 3. `/newgame` → ربات را انتخاب کنید → عنوان (`Bull or Bear`)، توضیح کوتاه، یک عکس
-   ۶۴۰×۳۶۰، و در انتها **short name** بدهید: دقیقاً `bullorbear`.
+   ۶۴۰×۳۶۰، و در انتها **short name** بدهید: دقیقاً `bull_or_bear`.
    این مقدار باید با `GAME_SHORT_NAME` در env یکی باشد — اگر فرق کند دکمه‌ی Play کار نمی‌کند.
 
 ---
@@ -53,7 +53,7 @@
 
 ```env
 BOT_TOKEN=توکن-تازه-از-BotFather
-GAME_SHORT_NAME=bullorbear
+GAME_SHORT_NAME=bull_or_bear
 GAME_URL=https://game.example.com        # آدرس HTTPS عمومی همین سرویس
 SCORE_SECRET=خروجی-openssl-rand-hex-32   # کلید امضای امتیازها — یکبار بسازید و دیگر عوض نکنید
 PORT=8080
@@ -120,7 +120,7 @@ pm2 restart bull-or-bear
 قبل از اعلام عمومی، این‌ها را به‌ترتیب چک کنید:
 
 - [ ] توکن ربات **تازه** است (`/token`) و فقط در `.env` سرور است.
-- [ ] `/setinline` روشن و `/newgame` با short name دقیقاً `bullorbear` ثبت شده.
+- [ ] `/setinline` روشن و `/newgame` با short name دقیقاً `bull_or_bear` ثبت شده.
 - [ ] `openssl rand -hex 32` → در `SCORE_SECRET` گذاشته‌اید.
 - [ ] `npm run build -w @rebate-rush/game` بدون خطا و پوشه‌ی `dist` موجود است.
 - [ ] دامنه HTTPS دارد؛ `https://دامنه/health` جواب `{"ok":true}` می‌دهد.
