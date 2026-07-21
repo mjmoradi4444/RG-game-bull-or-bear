@@ -105,6 +105,7 @@ export function dashboardPage(cfg: DashConfig): string {
     '<button data-view="players">Players</button>' +
     '<button data-view="season">Season</button>' +
     '<button data-view="prizes">Prizes</button>' +
+    '<button data-view="tasks">Tasks</button>' +
     '<button data-view="flags">Flags</button>' +
     '<button data-view="audit">Audit</button></nav>' +
     '<main id="main"></main><div class="drawer" id="drawer"></div>' +
@@ -229,6 +230,25 @@ var ref=prompt('Back-office reference (optional):','')||'';
 var note=prompt('Note (optional):','')||'';
 var from=Date.now();var until=from+30*86400000;
 api('/prizes/'+CFG.prevSeason+'/'+rank+'/apply',{method:'POST',body:JSON.stringify({share:Number(share),effectiveFrom:from,effectiveUntil:until,backofficeRef:ref,note:note})}).then(function(x){if(x.ok)loadPW();else alert('Failed: '+(x.error||'?'));});}
+
+// ---- Tasks (catalog CRUD + funnel) ----
+VIEWS.tasks=function(){main.innerHTML='<h2>Tasks</h2><p class="muted">Edit rewards/URLs/active without redeploy. Rewards are clamped server-side (≤200 RP / ≤2 tokens).</p><div id="tkbody">Loading…</div>';loadTK();};
+function loadTK(){api('/tasks').then(function(d){var b=document.getElementById('tkbody');if(!b)return;
+var rows=d.tasks.map(function(t){
+return '<tr data-id="'+t.id+'"><td>'+esc(t.id)+'</td><td><input data-f="title" value="'+esc(t.title)+'" style="width:200px"></td><td class="muted">'+esc(t.cadence)+'/'+esc(t.kind)+'</td>'+
+'<td><input data-f="rewardAmount" type="number" value="'+t.rewardAmount+'" style="width:70px"> '+esc(t.rewardType)+'</td>'+
+'<td><input data-f="'+(t.channel!==undefined&&t.verifyMethod==="tg_member"?"channel":"url")+'" value="'+esc(t.channel||t.url||"")+'" placeholder="'+(t.verifyMethod==="tg_member"?"@channel":t.verifyMethod==="click_claim"?"https://…":"")+'" style="width:160px"></td>'+
+'<td><input data-f="active" type="checkbox" '+(t.active?"checked":"")+'></td>'+
+'<td class="muted">'+t.completed+' done · '+t.claimed+' claimed</td>'+
+'<td><button class="btn" data-save="'+t.id+'">Save</button></td></tr>';
+}).join('');
+b.innerHTML='<table><thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Reward</th><th>URL / channel</th><th>Active</th><th>Funnel</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+[].forEach.call(b.querySelectorAll('[data-save]'),function(bt){bt.onclick=function(){
+var tr=bt.closest('tr');var patch={};
+[].forEach.call(tr.querySelectorAll('[data-f]'),function(inp){var f=inp.getAttribute('data-f');patch[f]=inp.type==='checkbox'?inp.checked:inp.value;});
+api('/tasks/'+bt.getAttribute('data-save'),{method:'POST',body:JSON.stringify(patch)}).then(function(){bt.textContent='Saved ✓';setTimeout(loadTK,600);});
+};});
+});}
 
 // ---- Flags ----
 VIEWS.flags=function(){main.innerHTML='<h2>Anomalies &amp; review</h2><div class="toolbar"><button class="btn" id="reval">Re-evaluate now</button></div><div id="fbody">Loading…</div>';

@@ -25,16 +25,28 @@ export class Round {
   locked = false;
   correct = false;
   timedOut = false;
-  decisionLeft: number = CONFIG.DECISION_SECONDS;
+  decisionLeft: number;
+  /**
+   * Tutorial guided round (PRD-ONBOARDING-TASKS §5.2): the intro can't be skipped,
+   * the decision window is extended, and the timer can be paused while a coach mark
+   * is up. Defaults keep normal rounds untouched.
+   */
+  readonly noSkip: boolean;
+  paused = false;
 
   constructor(
     readonly puzzle: Puzzle,
     /** 0-based index within the match. */
     readonly index: number,
     readonly total: number,
-  ) {}
+    opts?: { decisionSeconds?: number; noSkip?: boolean },
+  ) {
+    this.decisionLeft = opts?.decisionSeconds ?? CONFIG.DECISION_SECONDS;
+    this.noSkip = opts?.noSkip ?? false;
+  }
 
   update(dt: number): void {
+    if (this.paused) return; // guided round: frozen while a coach mark is shown
     this.t += dt;
     switch (this.phase) {
       case 'preroll':
@@ -65,8 +77,10 @@ export class Round {
   }
 
   /** Tap during the intro: jump straight to the decision (playback is deliberately
-   *  slow, so impatient / repeat players aren't held hostage by it). */
+   *  slow, so impatient / repeat players aren't held hostage by it). Disabled in the
+   *  guided tutorial round so the new player actually watches the stream (§5.2). */
   skipIntro(): void {
+    if (this.noSkip) return;
     if (this.phase === 'preroll' || this.phase === 'playback') this.enter('decide');
   }
 

@@ -105,12 +105,14 @@ export async function matchStart(mode: RankedMode, level: LevelId): Promise<Matc
   throw new Error(d.error ?? 'start failed');
 }
 
-/** Submit the match result; the server recomputes RP from the rounds. */
+/** Submit the match result; the server recomputes RP from the rounds. `forexCorrect`
+ *  is a client hint used only for the cosmetic forex daily task (never for RP). */
 export async function matchResult(
   matchToken: string,
   rounds: RoundOut[],
   won: boolean,
   oppKind: OppKind,
+  forexCorrect = 0,
 ): Promise<RpOutcome> {
   const g = gctx();
   if (!g) throw new Error('no gctx');
@@ -120,6 +122,7 @@ export async function matchResult(
     rounds,
     won,
     oppKind,
+    forexCorrect,
   });
   if (!d.ok) throw new Error(d.error ?? 'result rejected');
   return d;

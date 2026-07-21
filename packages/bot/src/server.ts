@@ -11,6 +11,8 @@ import { recordScore, topScores } from './leaderboard';
 import { handleMatchmaking } from './matchmaking';
 import { handleSeason } from './seasonRoutes';
 import { handleAccount } from './accountRoutes';
+import { handleTasks } from './taskRoutes';
+import { handleOnboarding } from './onboardingRoutes';
 import { handleAdmin } from './adminRoutes';
 
 // Signed launch tokens: score WRITES stay bounded (replay window), but generous
@@ -102,6 +104,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   // In-game account/email capture (PRD-ADMIN-EMAIL §5; see accountRoutes.ts).
   if (await handleAccount(req, res, url, config.allowOrigin)) return;
+
+  // Task system (PRD-ONBOARDING-TASKS §7; see taskRoutes.ts). Onboarding flags too.
+  if (await handleTasks(req, res, url, config.allowOrigin)) return;
+  if (await handleOnboarding(req, res, url, config.allowOrigin)) return;
 
   // Admin dashboard — SAME-ORIGIN ONLY (never gets the CORS wildcard) — must come
   // before static/CORS handling (PRD-ADMIN-EMAIL §6; see adminRoutes.ts).

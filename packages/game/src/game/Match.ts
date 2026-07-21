@@ -12,8 +12,8 @@ export class Match {
   readonly rounds: Round[];
   current = 0;
 
-  constructor(puzzles: Puzzle[]) {
-    this.rounds = puzzles.map((p, i) => new Round(p, i, puzzles.length));
+  constructor(puzzles: Puzzle[], roundOpts?: { decisionSeconds?: number; noSkip?: boolean }) {
+    this.rounds = puzzles.map((p, i) => new Round(p, i, puzzles.length, roundOpts));
   }
 
   get round(): Round {

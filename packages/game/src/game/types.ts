@@ -8,7 +8,8 @@ export type Screen =
   | 'result'
   | 'leaderboard'
   | 'prizes'
-  | 'email';
+  | 'email'
+  | 'tasks';
 
 /** Which mode the player chose from the title.
  *  'practice' = ranked Quick Play (1 token, earns RP) — historical name;

@@ -17,6 +17,7 @@ import {
   isConsumed,
   prizesView,
   profileOf,
+  progressTasks,
   refundToken,
   spendToken,
   tokensRemaining,
@@ -156,6 +157,7 @@ export async function handleSeason(
       rounds?: unknown;
       won?: unknown;
       oppKind?: unknown;
+      forexCorrect?: unknown;
     };
     const ctx = ctxFrom(data.gctx);
     const mt = verifyMatchToken(String(data.matchToken ?? ''));
@@ -202,6 +204,18 @@ export async function handleSeason(
       oppKind: mt.k === 'quick' ? 'none' : oppKind,
       mode: mt.k,
       avgMs,
+    });
+
+    // Advance daily/one-time gameplay tasks (server-authoritative; forexCorrect is
+    // the one client hint, used only for the cosmetic forex daily — never for RP).
+    const forexCorrect = Math.max(0, Math.min(BASE_ROUNDS, Math.floor(Number(data.forexCorrect) || 0)));
+    progressTasks(ctx.u, ctx.n ?? 'Player', {
+      mode: mt.k,
+      level: mt.l,
+      correctBase,
+      won,
+      oppKind: mt.k === 'quick' ? 'none' : oppKind,
+      forexCorrect,
     });
 
     // Telegram's native in-chat board tracks the season RP total, best-effort

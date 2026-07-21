@@ -108,6 +108,46 @@ export const COPY = {
   emailChangesLeft: (n: number): string => `${n} change${n === 1 ? '' : 's'} left this season`,
   emailPrompt: 'You’re in the running — add your RebateGain email to be eligible for the prize.',
 
+  // Tasks (PRD-ONBOARDING-TASKS §7.6)
+  tasks: 'Tasks',
+  tasksDaily: 'Daily',
+  tasksGeneral: 'General',
+  tasksClaim: 'Claim',
+  tasksClaimed: 'Claimed ✓',
+  tasksGo: 'Go',
+  tasksLocked: 'Locked',
+  tasksReward: (type: string, amt: number): string => (type === 'token' ? `+${amt} ⚡` : `+${amt} RP`),
+  tasksProgress: (a: number, b: number): string => `${a}/${b}`,
+  tasksResetIn: (t: string): string => `Resets in ${t}`,
+  tasksDailyDone: 'All done — tomorrow’s tasks land with your tokens.',
+  tasksClaimedToast: (amt: number, type: string): string =>
+    type === 'token' ? `+${amt} Rush Tokens!` : `+${amt} RP claimed!`,
+  tasksNotYet: 'Not done yet — keep playing.',
+  tasksJoinFirst: 'Join the channel first, then claim.',
+
+  // Tutorial / FTUE (PRD-ONBOARDING-TASKS §5). Short, translation-ready, no idioms.
+  howToPlay: 'How to play',
+  tutStart: 'Start',
+  tutSkip: 'Skip tutorial',
+  tutNext: 'Next',
+  tutBack: 'Back',
+  tutGotIt: 'Got it — let’s play',
+  tutSkipConfirm: 'Skip the tutorial? You can replay it anytime from the menu.',
+  tutConfirmSkip: 'Skip',
+  tutConfirmStay: 'Keep going',
+  tut: [
+    'Read the chart. Call the next move. Let’s play one practice round — under a minute.',
+    'A real market chart is playing — this is genuine forex history.',
+    'The chart froze. Take your time — read the trend.',
+    'Will the next candles go up or down? Tap BUY or SELL to lock your call.',
+    'The real future — this is what actually happened next. ✓ means you called it.',
+    'That’s one round. A match is 5 rounds — most correct calls wins.',
+    'Three levels. Harder charts pay more RP per correct call: +10 / +20 / +30.',
+    '10 Rush Tokens daily. Each ranked match costs 1. Practice is always free.',
+    'Play daily to grow your streak multiplier. Seasons last one month.',
+    'Finish top 3 and your RebateGain rebate share goes up for a whole month.',
+  ] as string[],
+
   // Round flow
   roundOf: (n: number, total: number): string => `Round ${n} / ${total}`,
   callIt: 'CALL IT',

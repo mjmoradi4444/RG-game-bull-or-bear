@@ -124,6 +124,29 @@ prize deliverable by bridging a Telegram player to a RebateGain account.
   '<password>'`). The RebateGain back office is behind a one-module seam
   (`rebategainAdapter.ts`, manual now / API later).
 
+**Onboarding, forex-first charts & tasks** (`PRD-ONBOARDING-TASKS.md`, Phase A) — fixes
+the first five minutes and the daily middle.
+
+- *Forex-first charts (Lever 1):* the raw pool is 72% crypto — wrong for a forex brand.
+  `PuzzleBank.pick` now draws each round's class from `ASSET_CLASS_WEIGHTS` (forex .70 /
+  commodity .15 / crypto .15 — XAU counts as forex), guarantees ≥1 XAU/EUR clip per
+  match, drops SOL, and stays **deterministic per seed** (the duel invariant).
+  `_pickertest.ts` asserts the distribution (±5pp), determinism, and brand guarantee.
+  *(Lever 2 — a data-pipeline rebuild to ~500 forex-majority clips — is the remaining
+  follow-up so the Whale tier isn't crypto-heavy.)*
+- *First-run tutorial:* a 10-step FTUE (`Game.ts` + `Tutorial` flow) — welcome → a guided
+  forex practice round (paused/extended, no-skip) → a 4-step environment tour with a
+  spotlight overlay. Skippable, replayable via "How to play", remembered server-side
+  (`users.tutorial_done`, `/onboarding`), shown only to brand-new players (never over a
+  challenge link).
+- *Tasks:* one-time (tutorial, socials, email-link, first-duel, referral) + 3 rotating
+  daily tasks (same for everyone), paying RP/tokens through the same server-side pipeline
+  (tagged `source: task`), capped so task RP stays ≲5% of a season. Gameplay progress is
+  server-authoritative from match submissions; Telegram-join verifies via
+  `getChatMember`; socials use a 30s click-claim. `GET/POST /tasks*`, a Tasks sheet in the
+  game, and an admin **Tasks** view (CRUD + funnel, rewards clamped ≤200 RP / ≤2 tokens).
+  Social URLs/channel are set in the admin panel — no redeploy, no new env.
+
 **Deploy:** frontend (`npm run build -w @rebate-rush/game`) to Cloudflare Pages /
 Vercel (HTTPS); bot to Railway / Render / Fly (set env; switch long polling to a
 webhook for production).
@@ -172,6 +195,13 @@ webhook for production).
   heuristic anomaly flags, append-only audit log, back-office adapter seam). Admin routes
   are same-origin only and disabled until credentials are provisioned. **Remaining (B/C):**
   Telegram 2FA, sparklines, expiry auto-reminders, and the automated back-office API.
+- [~] **Phase 9 — onboarding, forex-first charts & tasks** (`PRD-ONBOARDING-TASKS.md`):
+  Phase A shipped — forex-weighted deterministic picker (Lever 1, `_pickertest.ts`), the
+  10-step first-run tutorial (guided forex round + spotlight tour, server-remembered,
+  replayable), and the task system (one-time + daily, server-authoritative progress,
+  Telegram-join verify, click-claim socials, referral, Tasks sheet + admin Tasks CRUD,
+  reward clamps). **Remaining:** dataset rebuild (Lever 2, forex-majority ~500 clips),
+  contextual tooltips polish, and Persian localization of the new copy.
 
 > Verified locally: HMAC sign/verify/expiry/clamp unit-tested; the score API's routing,
 > CORS, and 401 gate confirmed via curl; bot + game type-check clean. The

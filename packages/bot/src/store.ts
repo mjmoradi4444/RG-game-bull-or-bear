@@ -8,12 +8,20 @@ import {
   computeRp,
   dayKey,
   dayStreakMultiplier,
+  nextRefillAt,
   seasonEndsAt,
   seasonOf,
   type LevelId,
   type OppKind,
   type RpBreakdown,
 } from './rp';
+import {
+  DAILY_POOL_IDS,
+  DEFAULT_TASKS,
+  REFERRAL_TOKEN_CAP,
+  clampReward,
+  type TaskDef,
+} from './taskCatalog';
 
 /**
  * Seasonal store — PRD-SCORING-TOKENS §8.1, Phase A.
@@ -54,6 +62,14 @@ interface UserRec {
   banned?: boolean;
   /** Free-form operator notes shown in the player drawer. */
   adminNote?: string;
+  // Onboarding (PRD-ONBOARDING-TASKS §5). tutorialDone survives reinstalls.
+  tutorialDone?: boolean;
+  tutorialSkipped?: boolean;
+  /** Contextual one-time tooltips already seen (screen keys). */
+  seenTips?: string[];
+  /** Who invited this player (referral attribution) + whether we've credited them. */
+  referredBy?: number;
+  refCredited?: boolean;
 }
 
 export interface ScoreRec {
@@ -98,7 +114,10 @@ export interface PrizeRec {
 interface TokenDay {
   spent: number;
   refunded: number;
+  /** Earned bonus tokens (from tasks) — capped at MAX_BONUS_TOKENS/day (PRD §5.A). */
+  bonus?: number;
 }
+const MAX_BONUS_TOKENS = 5;
 
 /** One appended email-change record (append-only — PRD §5.3). */
 export interface EmailHistoryRec {
@@ -180,6 +199,22 @@ interface State {
   auditLog: AuditRec[];
   /** Admin session cookies, keyed by opaque token. */
   adminSessions: Record<string, AdminSession>;
+  // ---- PRD-ONBOARDING-TASKS additions ----
+  /** Editable task catalog (seeded from DEFAULT_TASKS on first boot). */
+  taskCatalog: TaskDef[];
+  /** Server-picked daily task ids, keyed by UTC day (same 3 for everyone). */
+  dailyRotation: Record<string, string[]>;
+  /** Per-user task progress, keyed `${u}:${taskId}:${day|'-'}`. */
+  taskProgress: Record<string, TaskProgressRec>;
+  /** Click-claim visit timestamps, keyed `${u}:${taskId}` (30s unlock). */
+  taskVisits: Record<string, number>;
+}
+
+interface TaskProgressRec {
+  state: 'in_progress' | 'completed' | 'claimed';
+  progress: number;
+  completedAt?: number;
+  claimedAt?: number;
 }
 
 /** Keep the global match log bounded (JSON in memory; small game). */
@@ -217,6 +252,10 @@ function load(): State {
         flags: s.flags ?? [],
         auditLog: s.auditLog ?? [],
         adminSessions: s.adminSessions ?? {},
+        taskCatalog: s.taskCatalog?.length ? s.taskCatalog : DEFAULT_TASKS.map((t) => ({ ...t })),
+        dailyRotation: s.dailyRotation ?? {},
+        taskProgress: s.taskProgress ?? {},
+        taskVisits: s.taskVisits ?? {},
       };
     }
   } catch {
@@ -249,6 +288,10 @@ function load(): State {
     flags: [],
     auditLog: [],
     adminSessions: {},
+    taskCatalog: DEFAULT_TASKS.map((t) => ({ ...t })),
+    dailyRotation: {},
+    taskProgress: {},
+    taskVisits: {},
   };
 }
 
@@ -358,7 +401,19 @@ export function tokensRemaining(u: number): number {
   ensureSeason();
   const t = state.tokens[`${dayKey()}:${u}`];
   if (!t) return DAILY_TOKENS;
-  return Math.max(0, Math.min(DAILY_TOKENS, DAILY_TOKENS - t.spent + t.refunded));
+  const cap = DAILY_TOKENS + MAX_BONUS_TOKENS;
+  return Math.max(0, Math.min(cap, DAILY_TOKENS + (t.bonus ?? 0) - t.spent + t.refunded));
+}
+
+/** Grant earned bonus tokens (from a task), capped at +5/day. Returns count granted. */
+export function grantBonusToken(u: number, n: number): number {
+  ensureSeason();
+  const t = tokenDay(u, dayKey());
+  const have = t.bonus ?? 0;
+  const add = Math.max(0, Math.min(n, MAX_BONUS_TOKENS - have));
+  t.bonus = have + add;
+  save();
+  return add;
 }
 
 /** Atomically spend one token; returns the new remaining count or null if broke. */
@@ -582,6 +637,433 @@ export function previousSeasonId(seasonId: string): string {
 export function userName(u: number): string {
   return state.users[String(u)]?.name ?? 'Player';
 }
+
+// ============================================================================
+// PRD-ONBOARDING-TASKS — onboarding flags + task system
+// ============================================================================
+
+// ---- onboarding (tutorial + tooltips, §5) ----------------------------------
+
+export interface OnboardingView {
+  tutorialDone: boolean;
+  tutorialSkipped: boolean;
+  seenTips: string[];
+}
+
+export function onboardingOf(u: number, name?: string): OnboardingView {
+  ensureSeason();
+  const rec = userRec(u, name);
+  return {
+    tutorialDone: rec.tutorialDone ?? false,
+    tutorialSkipped: rec.tutorialSkipped ?? false,
+    seenTips: rec.seenTips ?? [],
+  };
+}
+
+export function setTutorial(u: number, name: string, done: boolean, skipped: boolean): void {
+  ensureSeason();
+  const rec = userRec(u, name);
+  if (done) rec.tutorialDone = true;
+  if (skipped) rec.tutorialSkipped = true;
+  save();
+}
+
+export function markTipSeen(u: number, tip: string): void {
+  const rec = userRec(u);
+  const tips = rec.seenTips ?? [];
+  if (!tips.includes(tip)) {
+    tips.push(tip);
+    rec.seenTips = tips;
+    save();
+  }
+}
+
+/** A brand-new player (no tutorial flags and no matches) should see the FTUE. */
+export function isNewPlayer(u: number): boolean {
+  const rec = state.users[String(u)];
+  if (!rec) return true;
+  if (rec.tutorialDone || rec.tutorialSkipped) return false;
+  return (state.scores[String(u)]?.matches ?? 0) === 0;
+}
+
+// ---- task helpers -----------------------------------------------------------
+
+const pkey = (u: number, taskId: string, day?: string): string => `${u}:${taskId}:${day ?? '-'}`;
+
+function taskDef(id: string): TaskDef | undefined {
+  return state.taskCatalog.find((t) => t.id === id);
+}
+
+function getProg(u: number, taskId: string, day?: string): TaskProgressRec {
+  const k = pkey(u, taskId, day);
+  let r = state.taskProgress[k];
+  if (!r) {
+    r = { state: 'in_progress', progress: 0 };
+    state.taskProgress[k] = r;
+  }
+  return r;
+}
+
+function bump(u: number, taskId: string, day: string | undefined, to: number, target: number): void {
+  const r = getProg(u, taskId, day);
+  if (r.state === 'claimed') return;
+  r.progress = Math.min(target, Math.max(r.progress, to));
+  if (r.progress >= target && r.state === 'in_progress') {
+    r.state = 'completed';
+    r.completedAt = Date.now();
+  }
+}
+
+// ---- daily rotation (§7.3 — same 3 for everyone, snapshot per day) ----------
+
+function strHash(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function dailyTaskIds(day: string): string[] {
+  if (state.dailyRotation[day]) return state.dailyRotation[day]!;
+  const pool = state.taskCatalog.filter((t) => t.cadence === 'daily' && t.active).map((t) => t.id);
+  // Deterministic shuffle from the day → same 3 for all players.
+  let s = strHash(day) || 1;
+  const rng = (): number => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const arr = [...pool];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+  const picked = arr.slice(0, 3);
+  state.dailyRotation[day] = picked;
+  // Prune rotations older than yesterday.
+  const keep = new Set([day, dayKey(Date.now() - 86_400_000)]);
+  for (const d of Object.keys(state.dailyRotation)) if (!keep.has(d)) delete state.dailyRotation[d];
+  save();
+  return picked;
+}
+
+// ---- RP grant for a task (source: task, §7.4) -------------------------------
+
+function grantTaskRp(u: number, name: string, rp: number): { seasonRp: number; rank: number } {
+  let sc = state.scores[String(u)];
+  if (!sc) {
+    sc = { u, name, rp: 0, matches: 0, wins: 0, correct: 0, rounds: 0, lastRpAt: 0 };
+    state.scores[String(u)] = sc;
+  }
+  sc.rp += rp;
+  sc.lastRpAt = Date.now();
+  state.matchLog.push({
+    id: rid(6),
+    u,
+    season: state.activeSeason,
+    ts: Date.now(),
+    level: '-',
+    mode: 'task',
+    oppKind: 'task',
+    correctBase: 0,
+    roundsPlayed: 0,
+    rp,
+    avgMs: 0,
+  });
+  if (state.matchLog.length > MATCH_LOG_CAP) state.matchLog.splice(0, state.matchLog.length - MATCH_LOG_CAP);
+  save();
+  return { seasonRp: sc.rp, rank: rankOf(u) };
+}
+
+// ---- gameplay auto-progress (§7.3 / §7.7) -----------------------------------
+
+export interface TaskMatchEvent {
+  mode: string; // quick | live | duel
+  level: LevelId;
+  correctBase: number;
+  won: boolean;
+  oppKind: OppKind;
+  /** Correct calls on forex charts this match (client-provided hint for d_forex). */
+  forexCorrect: number;
+}
+
+/** Advance gameplay tasks from a ranked match result (server-authoritative). */
+export function progressTasks(u: number, name: string, ev: TaskMatchEvent): void {
+  ensureSeason();
+  userRec(u, name);
+  const day = dayKey();
+  const isDuel = ev.oppKind === 'human' || ev.oppKind === 'ai';
+
+  // One-time gameplay milestones.
+  if (ev.mode === 'live' || ev.mode === 'duel') bump(u, 'first_duel', undefined, 1, 1);
+  if (ev.won && ev.oppKind === 'human') bump(u, 'first_human_win', undefined, 1, 1);
+
+  // Today's 3 daily tasks only.
+  const today = dailyTaskIds(day);
+  const spent = state.tokens[`${day}:${u}`]?.spent ?? 0;
+  for (const id of today) {
+    const def = taskDef(id);
+    if (!def) continue;
+    const p = getProg(u, id, day);
+    const cur = p.progress;
+    switch (id) {
+      case 'd_play3':
+        if (ev.mode !== 'free') bump(u, id, day, cur + 1, def.target);
+        break;
+      case 'd_win':
+        if (ev.won && isDuel) bump(u, id, day, def.target, def.target);
+        break;
+      case 'd_pro_whale':
+        if (ev.level === 'pro' || ev.level === 'whale') bump(u, id, day, cur + ev.correctBase, def.target);
+        break;
+      case 'd_score4':
+        if (ev.correctBase >= 4) bump(u, id, day, def.target, def.target);
+        break;
+      case 'd_forex':
+        if (ev.forexCorrect >= 3) bump(u, id, day, def.target, def.target);
+        break;
+      case 'd_spend':
+        bump(u, id, day, spent, def.target);
+        break;
+      default:
+        break;
+    }
+  }
+  // Credit the inviter the first time this player completes a match (referral).
+  creditReferral(u);
+}
+
+/** Client signals a result-card share for the d_share daily task. */
+export function shareTaskEvent(u: number, name: string): void {
+  ensureSeason();
+  userRec(u, name);
+  const day = dayKey();
+  if (dailyTaskIds(day).includes('d_share')) bump(u, 'd_share', day, 1, 1);
+}
+
+// ---- referral (§7.2) --------------------------------------------------------
+
+export function recordReferral(inviteeU: number, inviterU: number): void {
+  if (inviteeU === inviterU) return;
+  const rec = userRec(inviteeU);
+  if (rec.referredBy === undefined) {
+    rec.referredBy = inviterU;
+    save();
+  }
+}
+
+/** On the invitee's first completed match, credit the inviter +1 token (cap 5). */
+function creditReferral(inviteeU: number): void {
+  const rec = state.users[String(inviteeU)];
+  if (!rec || rec.refCredited || rec.referredBy === undefined) return;
+  rec.refCredited = true;
+  const inviter = rec.referredBy;
+  const p = getProg(inviter, 'referral', undefined);
+  if (p.progress < REFERRAL_TOKEN_CAP) {
+    p.progress += 1;
+    grantBonusToken(inviter, 1);
+    if (p.progress >= REFERRAL_TOKEN_CAP) {
+      p.state = 'claimed';
+      p.claimedAt = Date.now();
+    }
+  }
+  save();
+}
+
+// ---- click-claim visit (§7.5) -----------------------------------------------
+
+export function visitTask(u: number, taskId: string): void {
+  const def = taskDef(taskId);
+  if (!def || def.verifyMethod !== 'click_claim') return;
+  state.taskVisits[`${u}:${taskId}`] = Date.now();
+  save();
+}
+
+// ---- completion state resolution --------------------------------------------
+
+type TaskState = 'locked' | 'in_progress' | 'completed' | 'claimed';
+
+function resolveState(u: number, def: TaskDef, day?: string): { state: TaskState; progress: number } {
+  const rec = state.users[String(u)];
+  const p = state.taskProgress[pkey(u, def.id, day)];
+  if (p?.state === 'claimed') return { state: 'claimed', progress: p.progress };
+
+  // Server-flag tasks derive completion from user state.
+  if (def.id === 'tutorial') {
+    const done = !!rec?.tutorialDone;
+    return { state: done ? 'completed' : 'in_progress', progress: done ? 1 : 0 };
+  }
+  if (def.id === 'email_link') {
+    const done = !!rec?.email;
+    return { state: done ? 'completed' : 'in_progress', progress: done ? 1 : 0 };
+  }
+  if (def.verifyMethod === 'click_claim') {
+    const visited = state.taskVisits[`${u}:${def.id}`];
+    const ready = visited && Date.now() - visited >= 30_000;
+    return { state: ready ? 'completed' : 'in_progress', progress: 0 };
+  }
+  if (def.verifyMethod === 'tg_member') {
+    // Membership is verified at claim time; show as claimable-pending.
+    return { state: p?.state === 'completed' ? 'completed' : 'in_progress', progress: p?.progress ?? 0 };
+  }
+  // Gameplay / referral: from stored progress.
+  const prog = p?.progress ?? 0;
+  const st: TaskState = p?.state === 'completed' || prog >= def.target ? 'completed' : 'in_progress';
+  return { state: st, progress: prog };
+}
+
+// ---- tasks view (§7.6) ------------------------------------------------------
+
+export interface TaskRow {
+  id: string;
+  kind: string;
+  title: string;
+  rewardType: string;
+  rewardAmount: number;
+  verifyMethod: string;
+  url?: string;
+  target: number;
+  state: TaskState;
+  progress: number;
+}
+
+export interface TasksView {
+  daily: TaskRow[];
+  general: TaskRow[];
+  resetAt: number;
+  claimable: number;
+}
+
+function toRow(u: number, def: TaskDef, day?: string): TaskRow {
+  const { state: st, progress } = resolveState(u, def, day);
+  // Give the client an openable link: the social URL, or a t.me link for TG tasks.
+  const url =
+    def.url ||
+    (def.channel ? `https://t.me/${def.channel.replace(/^@/, '')}` : undefined);
+  return {
+    id: def.id,
+    kind: def.kind,
+    title: def.title,
+    rewardType: def.rewardType,
+    rewardAmount: def.rewardAmount,
+    verifyMethod: def.verifyMethod,
+    url,
+    target: def.target,
+    state: st,
+    progress,
+  };
+}
+
+export function tasksView(u: number, name?: string): TasksView {
+  ensureSeason();
+  userRec(u, name);
+  const day = dayKey();
+  const dailyIds = dailyTaskIds(day);
+  const daily = dailyIds
+    .map((id) => taskDef(id))
+    .filter((d): d is TaskDef => !!d)
+    .map((d) => toRow(u, d, day));
+  const general = state.taskCatalog
+    .filter((t) => t.cadence === 'once' && t.active)
+    .sort((a, b) => a.sort - b.sort)
+    .map((d) => toRow(u, d));
+  const claimable = [...daily, ...general].filter((r) => r.state === 'completed').length;
+  return { daily, general, resetAt: nextRefillAt(), claimable };
+}
+
+// ---- claim (§7.7) -----------------------------------------------------------
+
+export type ClaimResult =
+  | { ok: true; rewardType: string; reward: number; seasonRp?: number; rank?: number; tokens?: number }
+  | { ok: false; error: 'already_claimed' | 'not_completed' | 'unknown_task' | 'tg_not_member' };
+
+/** Claim a completed task. `tgVerified` is supplied by the route after a
+ *  getChatMember check for tg_member tasks. Idempotent. */
+export function claimTask(u: number, name: string, taskId: string, day: string | undefined, tgVerified?: boolean): ClaimResult {
+  ensureSeason();
+  userRec(u, name);
+  const def = taskDef(taskId);
+  if (!def || !def.active) return { ok: false, error: 'unknown_task' };
+  const dayArg = def.cadence === 'daily' ? (day ?? dayKey()) : undefined;
+
+  const p = getProg(u, taskId, dayArg);
+  if (p.state === 'claimed') return { ok: false, error: 'already_claimed' };
+
+  // Completion gates.
+  if (def.verifyMethod === 'tg_member') {
+    if (!tgVerified) return { ok: false, error: 'tg_not_member' };
+  } else {
+    const { state: st } = resolveState(u, def, dayArg);
+    if (st !== 'completed') return { ok: false, error: 'not_completed' };
+  }
+
+  p.state = 'claimed';
+  p.claimedAt = Date.now();
+  p.progress = Math.max(p.progress, def.target);
+
+  const amount = clampReward(def.rewardType, def.rewardAmount);
+  if (def.rewardType === 'token') {
+    const granted = grantBonusToken(u, amount);
+    save();
+    return { ok: true, rewardType: 'token', reward: granted, tokens: tokensRemaining(u) };
+  }
+  const { seasonRp, rank } = grantTaskRp(u, name, amount);
+  return { ok: true, rewardType: 'rp', reward: amount, seasonRp, rank };
+}
+
+/** The @channel to verify for the Telegram-join task (route calls getChatMember). */
+export function tgJoinChannel(): string | null {
+  const def = taskDef('tg_join');
+  return def?.active && def.channel ? def.channel : null;
+}
+
+// ---- admin task management (§7.8) -------------------------------------------
+
+export function adminTasks(): Array<TaskDef & { completed: number; claimed: number }> {
+  ensureSeason();
+  return state.taskCatalog
+    .slice()
+    .sort((a, b) => a.sort - b.sort)
+    .map((t) => {
+      let completed = 0;
+      let claimed = 0;
+      for (const [k, p] of Object.entries(state.taskProgress)) {
+        if (k.split(':')[1] !== t.id) continue;
+        if (p.state === 'claimed') claimed++;
+        else if (p.state === 'completed') completed++;
+      }
+      return { ...t, completed, claimed };
+    });
+}
+
+export interface TaskEdit {
+  title?: string;
+  rewardAmount?: number;
+  url?: string;
+  channel?: string;
+  active?: boolean;
+  sort?: number;
+}
+
+export function editTask(actor: string, id: string, patch: TaskEdit): boolean {
+  const def = taskDef(id);
+  if (!def) return false;
+  const before = { ...def };
+  if (patch.title !== undefined) def.title = String(patch.title).slice(0, 120);
+  if (patch.rewardAmount !== undefined) def.rewardAmount = clampReward(def.rewardType, patch.rewardAmount);
+  if (patch.url !== undefined) def.url = String(patch.url).slice(0, 300);
+  if (patch.channel !== undefined) def.channel = String(patch.channel).slice(0, 100);
+  if (patch.active !== undefined) def.active = !!patch.active;
+  if (patch.sort !== undefined) def.sort = Math.floor(Number(patch.sort) || def.sort);
+  audit(actor, 'task_edit', 'task', id, before, { ...def });
+  save();
+  return true;
+}
+
+export { DAILY_POOL_IDS };
 
 export function prizesView(): { season: string; winners: PrizeRec[] } {
   ensureSeason();

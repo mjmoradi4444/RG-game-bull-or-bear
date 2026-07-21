@@ -39,3 +39,47 @@ export const ASSETS = [
 ] as const;
 
 export type Asset = (typeof ASSETS)[number];
+
+/**
+ * Asset-class weighting (PRD-ONBOARDING-TASKS §6). RebateGain is a FOREX rebate
+ * brand, so the puzzle mix should feel forex — not the crypto-heavy pool the raw
+ * dataset ships with. The runtime picker draws each round's class from these
+ * weights (Lever 1); a dataset rebuild (Lever 2) makes the effect complete.
+ */
+export type AssetClass = 'forex' | 'commodity' | 'crypto';
+
+export const ASSET_CLASS_WEIGHTS: Record<AssetClass, number> = {
+  forex: 0.7,
+  commodity: 0.15,
+  crypto: 0.15,
+};
+
+/** Fallback preference when a class/difficulty bucket is exhausted (forex first,
+ *  crypto last — keeps a forex-brand feel even on the fallback path). */
+export const CLASS_PREFERENCE: readonly AssetClass[] = ['forex', 'commodity', 'crypto'];
+
+/** Map a raw asset symbol to its class. XAU/USD counts as FOREX (the flagship
+ *  chart), per the config's own brand comment. Unknown symbols default to crypto. */
+export function assetClass(asset: string): AssetClass {
+  switch (asset) {
+    case 'XAU/USD':
+    case 'EUR/USD':
+    case 'GBP/USD':
+    case 'USD/JPY':
+    case 'AUD/USD':
+    case 'USD/CHF':
+      return 'forex';
+    case 'WTI':
+    case 'BRENT':
+      return 'commodity';
+    default:
+      return 'crypto';
+  }
+}
+
+/** Brand non-negotiables: every match should contain one of these where possible. */
+export const BRAND_ASSETS = ['XAU/USD', 'EUR/USD'] as const;
+
+/** Dropped at runtime until the dataset rebuild removes them (SOL isn't even in the
+ *  declared ASSETS list — doc/config drift called out in the PRD §2.1). */
+export const DROPPED_ASSETS = new Set<string>(['SOL']);

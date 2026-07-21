@@ -18,6 +18,8 @@ import {
   adminPlayer,
   adminPlayers,
   adminStandings,
+  adminTasks,
+  editTask,
   applyPrize,
   auditEntries,
   audit,
@@ -294,6 +296,26 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, ad
     const action = b.action === 'exclude' || b.action === 'ban' ? b.action : 'clear';
     const ok = resolveFlag(fm[1]!, admin, action, String(b.note ?? '').slice(0, 500));
     json(res, ok ? 200 : 409, { ok });
+    return true;
+  }
+
+  // GET /tasks · POST /tasks/:id (catalog CRUD — §7.8)
+  if (req.method === 'GET' && p === '/tasks') {
+    json(res, 200, { ok: true, tasks: adminTasks() });
+    return true;
+  }
+  const tm = /^\/tasks\/([a-z0-9_]+)$/.exec(p);
+  if (req.method === 'POST' && tm) {
+    const b = await body();
+    const ok = editTask(admin, tm[1]!, {
+      title: b.title !== undefined ? String(b.title) : undefined,
+      rewardAmount: b.rewardAmount !== undefined ? Number(b.rewardAmount) : undefined,
+      url: b.url !== undefined ? String(b.url) : undefined,
+      channel: b.channel !== undefined ? String(b.channel) : undefined,
+      active: b.active !== undefined ? !!b.active : undefined,
+      sort: b.sort !== undefined ? Number(b.sort) : undefined,
+    });
+    json(res, ok ? 200 : 404, { ok });
     return true;
   }
 

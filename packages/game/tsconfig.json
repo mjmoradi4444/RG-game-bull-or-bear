@@ -18,5 +18,7 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "// exclude": "Dev-only test scripts (run via tsx, use Node builtins) — not part of the browser build.",
+  "exclude": ["src/_*.ts"]
 }

@@ -5,7 +5,7 @@ import type { Particles } from '../engine/Particles';
 import { Rng } from '../engine/Rng';
 import type { LeaderEntry, TelegramAdapter } from '../telegram/TelegramAdapter';
 import type { Mode, Screen } from './types';
-import { CONFIG } from './config';
+import { CONFIG, assetClass } from './config';
 import { PuzzleBank } from './PuzzleBank';
 import { Match } from './Match';
 import type { Round } from './Round';
@@ -41,6 +41,21 @@ import {
   suggestEmailClient,
   type AccountView,
 } from '../net/AccountApi';
+import {
+  fetchTasks,
+  claimTask,
+  visitTask,
+  shareTask,
+  sendReferral,
+  type TasksView,
+  type TaskRow,
+} from '../net/TasksApi';
+import {
+  fetchOnboarding,
+  setTutorial as setTutorialServer,
+  localTutorialDone,
+  type OnboardingView,
+} from '../net/OnboardingApi';
 import { Title } from '../ui/Title';
 import { EmailOverlay } from '../ui/EmailOverlay';
 import { RoundView } from '../ui/RoundView';
@@ -136,6 +151,24 @@ export class Game {
   /** Whether the one-time result-screen email nudge has been shown/dismissed. */
   private emailPromptDismissed = false;
 
+  // Tasks (PRD-ONBOARDING-TASKS §7). null in plain-browser dev.
+  private tasks: TasksView | null = null;
+  private tasksTab: 'daily' | 'general' = 'daily';
+  private tasksReturn: Screen = 'title';
+  private tasksToast: { text: string; until: number } | null = null;
+  private tasksClaiming = false;
+
+  // First-run tutorial (PRD-ONBOARDING-TASKS §5).
+  private onboarding: OnboardingView | null = null;
+  private tutorialActive = false;
+  /** 1..10 per §5.2; 0 = inactive. Steps 2 & 5 are passive (gameplay-driven). */
+  private tutorialStep = 0;
+  private tutorialSkipConfirm = false;
+  private tutorialGuided = false;
+  /** True once the guided round has been paused at the freeze (so we do it once). */
+  private guidedFrozeHandled = false;
+  private guidedVerdictHandled = false;
+
   // Async duel (SPEC §4): the seed both players share + the incoming challenger.
   private matchSeed = 0;
   private opponent: Challenge | null = null;
@@ -226,6 +259,7 @@ export class Game {
         this.verdictFired = true;
         this.onVerdict(r);
       }
+      if (this.tutorialGuided) this.updateGuided();
     }
   }
 
@@ -285,6 +319,26 @@ export class Game {
     // Linked-account state for the email flow (null without a bot launch context).
     void fetchAccount().then((a) => {
       this.account = a;
+    });
+    // Task state for the Tasks sheet + title badge.
+    void fetchTasks().then((t) => {
+      this.tasks = t;
+    });
+    // Referral attribution: a `ref` deep-link param names the inviter (§7.2).
+    const ref = new URLSearchParams(location.hash.replace(/^#/, '')).get('ref') ?? new URLSearchParams(location.search).get('ref');
+    if (ref) sendReferral(ref);
+    // First-run tutorial: only brand-new players, never over an incoming challenge
+    // (the duel is the hook — don't block it; §5.4). Local mirror avoids a re-force.
+    void fetchOnboarding().then((o) => {
+      this.onboarding = o;
+      const done = (o?.tutorialDone ?? false) || (o?.tutorialSkipped ?? false) || localTutorialDone();
+      if (o?.isNew && !done && !this.opponent && this.screen === 'title') this.startTutorial();
+    });
+  }
+
+  private refreshTasks(): void {
+    void fetchTasks().then((t) => {
+      if (t) this.tasks = t;
     });
   }
 
@@ -361,7 +415,13 @@ export class Game {
     if (!mt) return;
     this.matchToken = null; // single-use — never submit twice
     this.rpResult = 'pending';
-    matchResult(mt, this.roundsLog, won, oppKind)
+    // Correct calls on forex charts (base rounds only) — for the forex daily task.
+    const forexCorrect = this.match
+      ? this.match.rounds
+          .slice(0, CONFIG.ROUNDS)
+          .filter((r) => r.phase === 'done' && r.correct && assetClass(r.puzzle.asset) === 'forex').length
+      : 0;
+    matchResult(mt, this.roundsLog, won, oppKind, forexCorrect)
       .then((r) => {
         this.rpResult = r;
         if (this.profile) {
@@ -369,6 +429,7 @@ export class Game {
           this.profile.rank = r.rank;
           this.profile.tokens = r.tokens;
         }
+        this.refreshTasks(); // gameplay task progress may have advanced
       })
       .catch(() => {
         this.rpResult = 'failed';
@@ -602,6 +663,13 @@ export class Game {
       return;
     }
 
+    // The tutorial overlay takes taps first. Card steps swallow stray taps; the
+    // passive gameplay steps (2 & 5) let taps reach the round underneath.
+    if (this.tutorialActive) {
+      if (this.onTapTutorial(px, py)) return;
+      if (this.tutorialHasCard()) return;
+    }
+
     switch (this.screen) {
       case 'title':
         this.onTapTitle(px, py);
@@ -647,6 +715,9 @@ export class Game {
       case 'email':
         this.onTapEmail(px, py);
         break;
+      case 'tasks':
+        this.onTapTasks(px, py);
+        break;
     }
   }
 
@@ -688,6 +759,451 @@ export class Game {
     const { w, h } = this.vp;
     const cw = Math.min(w * 0.84, 360);
     return { x: w / 2 - cw / 2, y: h * 0.8, w: cw, h: 46 };
+  }
+
+  // ---- tasks (PRD-ONBOARDING-TASKS §7) ------------------------------------
+
+  private enterTasks(from: Screen): void {
+    this.tasksReturn = from;
+    this.tasksTab = 'daily';
+    this.screen = 'tasks';
+    this.refreshTasks();
+  }
+
+  private taskRows(): TaskRow[] {
+    if (!this.tasks) return [];
+    return this.tasksTab === 'daily' ? this.tasks.daily : this.tasks.general;
+  }
+
+  private tasksChipRect(): { x: number; y: number; w: number; h: number } {
+    return { x: 12, y: 44, w: 104, h: 28 };
+  }
+
+  private howToChipRect(): { x: number; y: number; w: number; h: number } {
+    const { w } = this.vp;
+    return { x: w - 130, y: 44, w: 118, h: 26 };
+  }
+
+  private tasksTabRects(): Array<{ id: 'daily' | 'general'; x: number; y: number; w: number; h: number }> {
+    const { w, h } = this.vp;
+    const tw = Math.min(w * 0.42, 170);
+    const gap = 8;
+    const totalW = tw * 2 + gap;
+    const x0 = w / 2 - totalW / 2;
+    const y = h * 0.18;
+    return [
+      { id: 'daily', x: x0, y, w: tw, h: 38 },
+      { id: 'general', x: x0 + tw + gap, y, w: tw, h: 38 },
+    ];
+  }
+
+  private taskRowRect(i: number): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    const rw = Math.min(w * 0.9, 400);
+    return { x: w / 2 - rw / 2, y: h * 0.26 + i * 66, w: rw, h: 58 };
+  }
+
+  private taskClaimRect(i: number): { x: number; y: number; w: number; h: number } {
+    const r = this.taskRowRect(i);
+    return { x: r.x + r.w - 92, y: r.y + r.h / 2 - 16, w: 80, h: 32 };
+  }
+
+  private taskAction(row: TaskRow): 'claim' | 'go' | 'claimed' | 'none' {
+    if (row.state === 'claimed') return 'claimed';
+    if (row.state === 'completed') return 'claim';
+    if (row.verifyMethod === 'tg_member') return 'claim'; // server verifies membership
+    if (row.url) return 'go';
+    return 'none';
+  }
+
+  private onTapTasks(px: number, py: number): void {
+    if (hitButton(this.backButtons(), px, py) === 'back') {
+      this.audio.coin();
+      this.screen = this.tasksReturn;
+      return;
+    }
+    for (const t of this.tasksTabRects()) {
+      if (this.hitRect(t, px, py)) {
+        this.audio.coin();
+        this.tasksTab = t.id;
+        return;
+      }
+    }
+    const rows = this.taskRows();
+    for (let i = 0; i < rows.length; i++) {
+      if (!this.hitRect(this.taskClaimRect(i), px, py)) continue;
+      const row = rows[i]!;
+      const action = this.taskAction(row);
+      if (action === 'go' && row.url) {
+        this.audio.coin();
+        visitTask(row.id);
+        this.adapter.openLink(row.url);
+      } else if (action === 'claim') {
+        this.onClaimTask(row);
+      }
+      return;
+    }
+  }
+
+  private onClaimTask(row: TaskRow): void {
+    if (this.tasksClaiming) return;
+    this.tasksClaiming = true;
+    // Daily tasks are claimed against a specific UTC day; one-time tasks aren't.
+    const isDaily = this.tasks?.daily.some((d) => d.id === row.id) ?? false;
+    void claimTask(row.id, isDaily ? this.serverDayKey() : undefined).then((r) => {
+      this.tasksClaiming = false;
+      if (r.ok) {
+        this.audio.win();
+        this.adapter.haptic('success');
+        this.tasksToast = { text: COPY.tasksClaimedToast(r.reward, r.rewardType), until: this.pulse + 3 };
+        if (r.rewardType === 'rp' && this.profile && r.seasonRp !== undefined) {
+          this.profile.rp = r.seasonRp;
+          if (r.rank) this.profile.rank = r.rank;
+        }
+        if (r.rewardType === 'token' && this.profile && r.tokens !== undefined) this.profile.tokens = r.tokens;
+        this.refreshTasks();
+        this.refreshProfile();
+      } else {
+        this.audio.loss();
+        if (row.verifyMethod === 'tg_member' && row.url) {
+          this.tasksToast = { text: COPY.tasksJoinFirst, until: this.pulse + 3 };
+          this.adapter.openLink(row.url);
+        } else {
+          this.tasksToast = { text: COPY.tasksNotYet, until: this.pulse + 3 };
+        }
+      }
+    });
+  }
+
+  /** UTC day key matching the server's token/day logic (for daily task claims). */
+  private serverDayKey(): string {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  // ---- first-run tutorial (PRD-ONBOARDING-TASKS §5) -----------------------
+
+  private startTutorial(): void {
+    this.tutorialActive = true;
+    this.tutorialStep = 1;
+    this.tutorialSkipConfirm = false;
+    this.tutorialGuided = false;
+    this.screen = 'title';
+  }
+
+  /** Which steps dim the screen (card-only). Steps 2 & 5 stay clear for gameplay. */
+  private tutorialDimmed(): boolean {
+    return this.tutorialStep !== 2 && this.tutorialStep !== 5;
+  }
+
+  /** True while a coach card with tappable Next/Back/Start is showing. */
+  private tutorialHasCard(): boolean {
+    return this.tutorialActive && this.tutorialStep !== 2 && this.tutorialStep !== 5;
+  }
+
+  private tutorialAdvance(): void {
+    const s = this.tutorialStep;
+    if (s === 1) {
+      this.beginGuidedRound();
+      return;
+    }
+    if (s === 3) {
+      this.tutorialStep = 4;
+      return;
+    }
+    if (s === 4) {
+      // Resume the (paused) guided round for the player's call.
+      if (this.match) this.match.round.paused = false;
+      this.tutorialStep = 5;
+      return;
+    }
+    if (s === 6) {
+      // Guided round done → the environment tour, back on the title.
+      this.tutorialGuided = false;
+      this.match = null;
+      this.screen = 'title';
+      this.tutorialStep = 7;
+      return;
+    }
+    if (s >= 7 && s < 10) {
+      this.tutorialStep = s + 1;
+      return;
+    }
+    if (s === 10) {
+      this.finishTutorial();
+    }
+  }
+
+  private tutorialBack(): void {
+    if (this.tutorialStep >= 8 && this.tutorialStep <= 10) this.tutorialStep -= 1;
+    else if (this.tutorialStep === 4) this.tutorialStep = 3;
+  }
+
+  private finishTutorial(): void {
+    this.tutorialActive = false;
+    this.tutorialGuided = false;
+    this.tutorialStep = 0;
+    setTutorialServer(true, false);
+    if (this.onboarding) this.onboarding.tutorialDone = true;
+    this.refreshTasks(); // the "Complete the tutorial" task is now claimable
+    this.screen = 'title';
+    this.audio.win();
+  }
+
+  private confirmSkipTutorial(): void {
+    this.tutorialActive = false;
+    this.tutorialGuided = false;
+    this.tutorialSkipConfirm = false;
+    this.tutorialStep = 0;
+    this.match = null;
+    setTutorialServer(false, true);
+    if (this.onboarding) this.onboarding.tutorialSkipped = true;
+    this.screen = 'title';
+  }
+
+  /** Start the guided practice round: one forex Retail puzzle, no-skip, 30s window. */
+  private beginGuidedRound(): void {
+    if (!this.bank.isReady) {
+      void this.bank.ready.then(() => this.beginGuidedRound());
+      return;
+    }
+    const puzzle = this.bank.pickGuided(new Rng(makeSeed()), 'easy');
+    if (!puzzle) {
+      // No forex clip available — skip straight to the tour rather than blocking.
+      this.tutorialStep = 7;
+      return;
+    }
+    this.mode = 'free';
+    this.live = false;
+    this.opponent = null;
+    this.matchToken = null;
+    this.match = new Match([puzzle], { decisionSeconds: 30, noSkip: true });
+    this.reserve = [];
+    this.totalMs = 0;
+    this.roundsLog = [];
+    this.rpResult = null;
+    this.roundView.reset();
+    this.combo = 0;
+    this.bestCombo = 0;
+    this.shake = 0;
+    this.verdictFired = false;
+    this.lastRoundIndex = -1;
+    this.tutorialGuided = true;
+    this.guidedFrozeHandled = false;
+    this.guidedVerdictHandled = false;
+    this.tutorialStep = 2;
+    this.screen = 'round';
+  }
+
+  /** Drive the guided round's coach beats off the round phase (called in update). */
+  private updateGuided(): void {
+    const m = this.match;
+    if (!m) return;
+    const r = m.round;
+    // Freeze → pause and explain (once).
+    if (!this.guidedFrozeHandled && r.phase === 'decide' && this.tutorialStep === 2) {
+      this.guidedFrozeHandled = true;
+      r.paused = true;
+      this.tutorialStep = 3;
+    }
+    // Verdict → explain the reveal (once).
+    if (!this.guidedVerdictHandled && this.tutorialStep === 5 && r.verdictShown) {
+      this.guidedVerdictHandled = true;
+      this.tutorialStep = 6;
+    }
+  }
+
+  private tutorialCardRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    return { x: w * 0.06, y: h * 0.64, w: w * 0.88, h: h * 0.3 };
+  }
+
+  private tutorialSkipChipRect(): { x: number; y: number; w: number; h: number } {
+    const { w } = this.vp;
+    return { x: w / 2 - 55, y: 8, w: 110, h: 24 };
+  }
+
+  private tutorialCardButtons(): Button[] {
+    const c = this.tutorialCardRect();
+    const rowY = c.y + c.h - 58;
+    const out: Button[] = [];
+    out.push({ id: 'skip', x: c.x + c.w - 66, y: c.y + 10, w: 56, h: 24, label: COPY.tutSkip.split(' ')[0]!, kind: 'ghost' });
+    if (this.tutorialStep === 4 || (this.tutorialStep >= 8 && this.tutorialStep <= 10)) {
+      out.push({ id: 'back', x: c.x + 16, y: rowY, w: 96, h: 46, label: COPY.tutBack, kind: 'ghost' });
+    }
+    const label = this.tutorialStep === 1 ? COPY.tutStart : this.tutorialStep === 10 ? COPY.tutGotIt : COPY.tutNext;
+    const pw = Math.min(180, c.w * 0.5);
+    out.push({ id: 'next', x: c.x + c.w - 16 - pw, y: rowY, w: pw, h: 46, label, kind: 'primary' });
+    return out;
+  }
+
+  private tutorialConfirmRects(): { confirm: { x: number; y: number; w: number; h: number }; cancel: { x: number; y: number; w: number; h: number } } {
+    const { w, h } = this.vp;
+    const cw = Math.min(w * 0.42, 160);
+    return {
+      cancel: { x: w / 2 - cw - 6, y: h * 0.56, w: cw, h: 48 },
+      confirm: { x: w / 2 + 6, y: h * 0.56, w: cw, h: 48 },
+    };
+  }
+
+  private onTapTutorial(px: number, py: number): boolean {
+    if (this.tutorialSkipConfirm) {
+      const { confirm, cancel } = this.tutorialConfirmRects();
+      if (this.hitRect(confirm, px, py)) {
+        this.audio.coin();
+        this.confirmSkipTutorial();
+      } else if (this.hitRect(cancel, px, py)) {
+        this.audio.coin();
+        this.tutorialSkipConfirm = false;
+      }
+      return true; // dialog is modal
+    }
+    if (!this.tutorialHasCard()) {
+      if (this.hitRect(this.tutorialSkipChipRect(), px, py)) {
+        this.audio.coin();
+        this.tutorialSkipConfirm = true;
+        return true;
+      }
+      return false; // let the tap reach the round (BUY/SELL at step 5)
+    }
+    const id = hitButton(this.tutorialCardButtons(), px, py);
+    if (id === 'skip') {
+      this.audio.coin();
+      this.tutorialSkipConfirm = true;
+      return true;
+    }
+    if (id === 'back') {
+      this.audio.coin();
+      this.tutorialBack();
+      return true;
+    }
+    if (id === 'next') {
+      this.audio.coin();
+      this.tutorialAdvance();
+      return true;
+    }
+    return false;
+  }
+
+  /** The element to spotlight for the environment-tour steps (7–10), else null. */
+  private spotlightRect(): { x: number; y: number; w: number; h: number } | null {
+    const union = (rects: Array<{ x: number; y: number; w: number; h: number }>): { x: number; y: number; w: number; h: number } | null => {
+      if (rects.length === 0) return null;
+      const x0 = Math.min(...rects.map((r) => r.x));
+      const y0 = Math.min(...rects.map((r) => r.y));
+      const x1 = Math.max(...rects.map((r) => r.x + r.w));
+      const y1 = Math.max(...rects.map((r) => r.y + r.h));
+      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    };
+    const btns = this.title.buttons(this.vp, !!this.profile);
+    const chips = this.chipRects();
+    switch (this.tutorialStep) {
+      case 7:
+        return union(btns.filter((b) => b.id === 'challenge' || b.id === 'practice' || b.id === 'free'));
+      case 8:
+        return union(chips.filter((c) => c.id === 'tokens'));
+      case 9:
+        return union(chips.filter((c) => c.id === 'streak' || c.id === 'season'));
+      case 10:
+        return union(btns.filter((b) => b.id === 'leaderboard'));
+      default:
+        return null;
+    }
+  }
+
+  private renderTutorial(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+
+    if (this.tutorialDimmed()) {
+      const spot = this.spotlightRect();
+      ctx.fillStyle = 'rgba(9,13,26,0.78)';
+      if (spot) {
+        // Dim everything except a padded hole around the spotlighted element.
+        const pad = 8;
+        const sx = spot.x - pad;
+        const sy = spot.y - pad;
+        const sw = spot.w + pad * 2;
+        const sh = spot.h + pad * 2;
+        ctx.fillRect(0, 0, w, sy);
+        ctx.fillRect(0, sy + sh, w, h - (sy + sh));
+        ctx.fillRect(0, sy, sx, sh);
+        ctx.fillRect(sx + sw, sy, w - (sx + sw), sh);
+        roundRectPath(ctx, sx, sy, sw, sh, 12);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = colors.rebateGold;
+        ctx.stroke();
+      } else {
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+
+    // Passive gameplay steps: a compact top banner + a skip chip.
+    if (!this.tutorialHasCard()) {
+      const r = this.tutorialSkipChipRect();
+      roundRectPath(ctx, r.x, r.y, r.w, r.h, r.h / 2);
+      ctx.fillStyle = 'rgba(9,13,26,0.7)';
+      ctx.fill();
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.semibold} 11px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(COPY.tutSkip, r.x + r.w / 2, r.y + r.h / 2 + 0.5);
+      ctx.textBaseline = 'alphabetic';
+      // The step copy as a banner just below the round header.
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+      wrapText(ctx, COPY.tut[this.tutorialStep - 1] ?? '', Math.min(w * 0.86, 360)).forEach((ln, i) =>
+        ctx.fillText(ln, cx, h * 0.1 + i * 18),
+      );
+      ctx.textAlign = 'left';
+      return;
+    }
+
+    // Skip-confirm dialog.
+    if (this.tutorialSkipConfirm) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.text;
+      ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
+      wrapText(ctx, COPY.tutSkipConfirm, Math.min(w * 0.8, 340)).forEach((ln, i) =>
+        ctx.fillText(ln, cx, h * 0.44 + i * 20),
+      );
+      const { confirm, cancel } = this.tutorialConfirmRects();
+      drawButton(ctx, { id: 'stay', ...cancel, label: COPY.tutConfirmStay, kind: 'gold' });
+      drawButton(ctx, { id: 'skip', ...confirm, label: COPY.tutConfirmSkip, kind: 'ghost' });
+      ctx.textAlign = 'left';
+      return;
+    }
+
+    // The coach card.
+    const c = this.tutorialCardRect();
+    roundRectPath(ctx, c.x, c.y, c.w, c.h, 16);
+    ctx.fillStyle = 'rgba(23,31,58,0.97)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = colors.border;
+    ctx.stroke();
+
+    // Progress dots (1–10) above the card.
+    const dots = 10;
+    const dotGap = 16;
+    const dx0 = cx - ((dots - 1) * dotGap) / 2;
+    for (let i = 0; i < dots; i++) {
+      ctx.beginPath();
+      ctx.arc(dx0 + i * dotGap, c.y - 14, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = i + 1 === this.tutorialStep ? colors.rebateGold : 'rgba(138,148,166,0.4)';
+      ctx.fill();
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.semibold} 15px ${fonts.family}`;
+    wrapText(ctx, COPY.tut[this.tutorialStep - 1] ?? '', c.w - 44).forEach((ln, i) =>
+      ctx.fillText(ln, cx, c.y + 40 + i * 22),
+    );
+
+    for (const b of this.tutorialCardButtons()) drawButton(ctx, b);
+    ctx.textAlign = 'left';
   }
 
   private hitRect(r: { x: number; y: number; w: number; h: number }, px: number, py: number): boolean {
@@ -826,6 +1342,18 @@ export class Game {
 
   private onTapTitle(px: number, py: number): void {
     if (this.onChipTap(px, py)) return;
+    // "How to play" — replay the tutorial anytime (§5.3).
+    if (this.hitRect(this.howToChipRect(), px, py)) {
+      this.audio.coin();
+      this.startTutorial();
+      return;
+    }
+    // Tasks chip (daily checklist).
+    if (this.tasks && this.hitRect(this.tasksChipRect(), px, py)) {
+      this.audio.coin();
+      this.enterTasks('title');
+      return;
+    }
     // Account-link chip (only when launched from the bot — email is for prizes).
     if (this.account && this.hitRect(this.accountChipRect(), px, py)) {
       this.audio.coin();
@@ -1039,6 +1567,7 @@ export class Game {
   }
 
   private shareResult(): void {
+    shareTask(); // credits the "Share a result card" daily task (§7.3)
     const correct = this.match ? this.match.correctCount : 0;
     const total = this.match ? this.match.total : CONFIG.ROUNDS;
     if (this.mode === 'challenge') {
@@ -1125,10 +1654,13 @@ export class Game {
         this.profile && this.profile.tokens <= 0 ? new Set(['challenge', 'practice']) : undefined;
       this.title.render(ctx, this.vp, this.pulse, banner, { includeFree: !!this.profile, locked });
       if (this.account) this.renderAccountChip();
+      if (this.tasks) this.renderTasksChip();
+      this.renderHowToChip();
     }
     else if (this.screen === 'levelSelect') this.renderLevelSelect();
     else if (this.screen === 'prizes') this.renderPrizes();
     else if (this.screen === 'email') this.renderEmail();
+    else if (this.screen === 'tasks') this.renderTasks();
     else if (this.screen === 'lobby') this.renderLobby();
     else if (this.screen === 'vs') this.renderVs();
     else if (this.screen === 'round' && this.match) {
@@ -1158,6 +1690,7 @@ export class Game {
 
     this.particles.render(ctx);
     this.renderMute();
+    if (this.tutorialActive) this.renderTutorial();
   }
 
   /** Top-left season chips: ⚡tokens · 🔥streak · ⏳countdown (PRD §7 title HUD). */
@@ -1893,6 +2426,172 @@ export class Game {
     }
 
     for (const bt of this.backButtons()) drawButton(ctx, bt);
+    ctx.textAlign = 'left';
+  }
+
+  /** Title-screen "Tasks" chip with a claimable-count badge (§7.6). */
+  private renderTasksChip(): void {
+    const { ctx } = this.vp;
+    const r = this.tasksChipRect();
+    const n = this.tasks?.claimable ?? 0;
+    const pulse = n > 0 ? 0.5 + 0.3 * Math.sin(this.pulse * 3) : 1;
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, r.h / 2);
+    ctx.fillStyle = 'rgba(23,31,58,0.8)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = n > 0 ? `rgba(245,196,81,${pulse.toFixed(2)})` : colors.border;
+    ctx.stroke();
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`✦ ${COPY.tasks}`, r.x + 12, r.y + r.h / 2 + 0.5);
+    if (n > 0) {
+      const bx = r.x + r.w - 15;
+      ctx.beginPath();
+      ctx.arc(bx, r.y + r.h / 2, 9, 0, Math.PI * 2);
+      ctx.fillStyle = colors.rebateGold;
+      ctx.fill();
+      ctx.fillStyle = '#101830';
+      ctx.font = `${fonts.weight.black} 11px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`${n}`, bx, r.y + r.h / 2 + 0.5);
+    }
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+  }
+
+  private renderTasks(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.07, 26)}px ${fonts.family}`;
+    ctx.fillText(COPY.tasks, cx, h * 0.12);
+
+    // Tabs.
+    for (const t of this.tasksTabRects()) {
+      const active = t.id === this.tasksTab;
+      roundRectPath(ctx, t.x, t.y, t.w, t.h, 10);
+      ctx.fillStyle = active ? 'rgba(245,196,81,0.14)' : 'rgba(23,31,58,0.7)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = active ? 'rgba(245,196,81,0.5)' : colors.border;
+      ctx.stroke();
+      ctx.fillStyle = active ? colors.rebateGold : colors.textMuted;
+      ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(t.id === 'daily' ? COPY.tasksDaily : COPY.tasksGeneral, t.x + t.w / 2, t.y + t.h / 2 + 0.5);
+    }
+    ctx.textBaseline = 'alphabetic';
+
+    // Reset countdown on the Daily tab.
+    if (this.tasksTab === 'daily' && this.tasks) {
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(COPY.tasksResetIn(fmtDuration(this.tasks.resetAt - Date.now())), cx, h * 0.235);
+    }
+
+    const rows = this.taskRows();
+    if (rows.length === 0) {
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(this.tasks ? COPY.tasksDailyDone : 'Loading…', cx, h * 0.32);
+    }
+    rows.forEach((row, i) => this.drawTaskRow(row, i));
+
+    // Claim toast.
+    if (this.tasksToast && this.pulse < this.tasksToast.until) {
+      ctx.fillStyle = colors.up;
+      ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(this.tasksToast.text, cx, h * 0.82);
+    }
+
+    for (const bt of this.backButtons()) drawButton(ctx, bt);
+    ctx.textAlign = 'left';
+  }
+
+  private drawTaskRow(row: TaskRow, i: number): void {
+    const { ctx } = this.vp;
+    const r = this.taskRowRect(i);
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, 12);
+    ctx.fillStyle = 'rgba(23,31,58,0.7)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = row.state === 'completed' ? 'rgba(245,196,81,0.5)' : colors.border;
+    ctx.stroke();
+
+    // Title + reward.
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = row.state === 'claimed' ? colors.textMuted : colors.text;
+    ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+    ctx.fillText(this.ellipsize(row.title, 34), r.x + 14, r.y + 22);
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
+    ctx.fillText(COPY.tasksReward(row.rewardType, row.rewardAmount), r.x + 14, r.y + 42);
+
+    // Progress bar for multi-step gameplay tasks.
+    if (row.target > 1 && row.state !== 'claimed') {
+      const bx = r.x + 90;
+      const bw = r.w - 90 - 100;
+      const frac = Math.max(0, Math.min(1, row.progress / row.target));
+      roundRectPath(ctx, bx, r.y + 35, bw, 6, 3);
+      ctx.fillStyle = 'rgba(40,49,84,0.8)';
+      ctx.fill();
+      if (frac > 0) {
+        roundRectPath(ctx, bx, r.y + 35, bw * frac, 6, 3);
+        ctx.fillStyle = colors.up;
+        ctx.fill();
+      }
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(COPY.tasksProgress(row.progress, row.target), r.x + r.w - 100, r.y + 40);
+    }
+
+    // Action button.
+    const action = this.taskAction(row);
+    const br = this.taskClaimRect(i);
+    if (action === 'claimed') {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.up;
+      ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
+      ctx.textBaseline = 'middle';
+      ctx.fillText(COPY.tasksClaimed, br.x + br.w / 2, br.y + br.h / 2);
+      ctx.textBaseline = 'alphabetic';
+    } else if (action === 'claim' || action === 'go') {
+      drawButton(ctx, {
+        id: action,
+        ...br,
+        label: action === 'claim' ? COPY.tasksClaim : COPY.tasksGo,
+        kind: action === 'claim' ? 'gold' : 'ghost',
+      });
+    }
+    ctx.textAlign = 'left';
+  }
+
+  /** Title-screen "How to play" chip — replays the tutorial. */
+  private renderHowToChip(): void {
+    const { ctx } = this.vp;
+    const r = this.howToChipRect();
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, r.h / 2);
+    ctx.fillStyle = 'rgba(23,31,58,0.8)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = colors.border;
+    ctx.stroke();
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.semibold} 11px ${fonts.family}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`? ${COPY.howToPlay}`, r.x + r.w / 2, r.y + r.h / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
   }
 
