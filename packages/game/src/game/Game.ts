@@ -47,7 +47,7 @@ import { RoundView } from '../ui/RoundView';
 import { type Button, drawButton, hitButton } from '../ui/Button';
 import { roundRectPath } from '../ui/glass';
 import { colors, fonts } from '../brand/tokens';
-import { COPY, SIGNUP_URL } from '../brand/copy';
+import { COPY, CREATE_ACCOUNT_URL, WEBSITE_URL } from '../brand/copy';
 import { wrapText } from '../ui/text';
 
 /** Seconds the VS face-off holds before the live match starts (tap skips). */
@@ -666,7 +666,7 @@ export class Game {
     }
     if (this.hitRect(this.emailCreateRect(), px, py)) {
       this.audio.coin();
-      this.adapter.openLink(SIGNUP_URL);
+      this.adapter.openLink(CREATE_ACCOUNT_URL);
       return;
     }
     const id = hitButton(this.emailButtons(), px, py);
@@ -836,7 +836,7 @@ export class Game {
     const cr = this.title.ctaRect(this.vp);
     if (px >= cr.x && px <= cr.x + cr.w && py >= cr.y && py <= cr.y + cr.h) {
       this.audio.coin();
-      this.adapter.openLink(SIGNUP_URL);
+      this.adapter.openLink(WEBSITE_URL);
       return;
     }
     const id = hitButton(this.title.buttons(this.vp, !!this.profile), px, py);
@@ -1007,7 +1007,7 @@ export class Game {
     if (!id) return;
     this.audio.coin();
     if (id === 'cta') {
-      this.adapter.openLink(SIGNUP_URL);
+      this.adapter.openLink(WEBSITE_URL);
     } else if (id === 'rematch') {
       if (this.mode === 'challenge') this.opponent = null; // a fresh challenge to send
       // Free practice replays for free; ranked replays spend another Rush Token.

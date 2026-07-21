@@ -30,7 +30,7 @@ bot?.command('play', sendGame);
 bot?.command('link', async (ctx) => {
   await ctx.reply(
     'To claim season prizes, link your RebateGain account:\n' +
-      'https://auth.rebategain.com/login\n\n' +
+      'https://rebategain.com/\n\n' +
       'Sign in (or create an account), then reply here with the email you used. ' +
       'Prizes are a rebate-share upgrade on real trading — not a cash payout.',
   );

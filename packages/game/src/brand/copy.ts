@@ -182,8 +182,9 @@ export function sourceLabel(source: string): string {
 }
 
 /**
- * Sign-up funnel target (SPEC §6). RebateGain's auth entry — it starts its own
- * OAuth/PKCE flow, so we link the clean login URL rather than a one-time authorize
- * link (those carry single-use code_challenge/state that only work for one session).
+ * Sign-up funnel target (SPEC §6). RebateGain site target.
  */
-export const SIGNUP_URL = 'https://auth.rebategain.com/login';
+export const WEBSITE_URL = 'https://rebategain.com/';
+export const CREATE_ACCOUNT_URL = 'https://auth.rebategain.com/login';
+export const SIGNUP_URL = WEBSITE_URL;
+
