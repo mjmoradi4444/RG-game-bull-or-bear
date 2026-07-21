@@ -13,9 +13,10 @@ export const COPY = {
   title: 'Bull or Bear',
   tagline: 'Read the chart. Call the next move.',
 
-  // Title modes (SPEC §4.4)
+  // Title modes (SPEC §4.4; 'free' practice per PRD-SCORING-TOKENS §5.A)
   challenge: 'Multiplayer',
   practice: 'Quick Play',
+  practiceFree: 'Practice',
   leaderboard: 'Leaderboard',
 
   // Live matchmaking (lobby + VS screen)
@@ -34,10 +35,56 @@ export const COPY = {
   connectionLost: 'Connection lost — try again',
   suddenCount: (n: number): string => `after ${n} sudden-death round${n > 1 ? 's' : ''}`,
 
-  // Level select (SPEC §5 — difficulty tiers)
+  // Level select (SPEC §5 — difficulty tiers; RP per PRD-SCORING-TOKENS §5.B)
   chooseLevel: 'Choose your level',
-  chooseLevelHint: 'Harder levels score more per correct call.',
-  ptsPerCorrect: (w: number): string => `+${w} per correct`,
+  chooseLevelHint: 'Harder levels score more RP per correct call.',
+  chooseLevelFreeHint: 'Free practice — no tokens, no RP.',
+  ptsPerCorrect: (w: number): string => `+${w * 10} RP`,
+  freeNoRp: 'Free · no RP',
+  tokenCost: '1 ⚡ per ranked match',
+
+  // Rush Tokens + season chips (PRD §5.A / §5.C)
+  tokens: (n: number, max: number): string => `⚡ ${n}/${max}`,
+  streakChip: (mult: number): string => `🔥 ×${mult.toFixed(2)}`,
+  seasonEndsShort: (t: string): string => `⏳ ${t}`,
+  outOfTokens: (t: string): string => `Out of tokens — refills in ${t}. Practice is free.`,
+  refillIn: (t: string): string => `Refills in ${t}`,
+  startFailed: 'Couldn’t start a ranked match — check your connection and try again.',
+
+  // RP result breakdown (PRD Story 2)
+  rpEarned: (rp: number): string => `+${rp} RP`,
+  rpBase: 'Base',
+  rpFlawless: 'Flawless',
+  rpWin: 'Duel win',
+  rpWinStreak: 'Win streak',
+  rpMultiplier: (m: number): string => `×${m.toFixed(2)} daily streak`,
+  seasonTotal: (rp: number, rank: number): string =>
+    `Season: ${rp.toLocaleString('en-US')} RP · #${rank}`,
+  rankDelta: (from: number, to: number): string => `#${from} → #${to}`,
+  rpPending: 'Scoring…',
+  rpFailed: 'Couldn’t submit RP — this match may not count.',
+
+  // Season leaderboard + Hall of Fame (PRD §5.C)
+  seasonLabel: (name: string): string => `Season · ${name}`,
+  seasonEndsIn: (t: string): string => `Season ends in ${t}`,
+  hallOfFame: 'Last season’s champions',
+  yourRankName: 'You',
+  yourRank: (rank: number, rp: number): string =>
+    `You · #${rank} · ${rp.toLocaleString('en-US')} RP`,
+
+  // Prizes sheet (PRD §5.D — compliance: share %, never a promised rate/amount)
+  prizes: 'Prizes',
+  prizesTitle: 'Season Prizes',
+  prizeLines: [
+    '🥇 1st — 100% rebate share, all next month',
+    '🥈 2nd — 90% rebate share, all next month',
+    '🥉 3rd — 80% rebate share, all next month',
+  ],
+  prizeDefinition:
+    'Your rebate share is the percentage of the broker commission RebateGain receives that is passed back to you. Winners get an upgraded share on their linked account — a rate upgrade on real trading, not a cash payout.',
+  prizeFloor: 'Play at least 20 ranked matches in the season to be eligible.',
+  prizeClaim: 'Winners claim via /link in the bot — an active RebateGain account is required.',
+  prizeTokensNote: 'Rush Tokens are a daily play allowance, not a currency, and can’t be bought.',
 
   // Round flow
   roundOf: (n: number, total: number): string => `Round ${n} / ${total}`,

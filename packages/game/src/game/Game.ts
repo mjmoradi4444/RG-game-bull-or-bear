@@ -20,6 +20,19 @@ import {
   type MpFinal,
   type MpMatched,
 } from '../net/Multiplayer';
+import {
+  fetchBoard,
+  fetchProfile,
+  matchAbort,
+  matchResult,
+  matchStart,
+  type OppKind,
+  type RankedMode,
+  type RoundOut,
+  type RpOutcome,
+  type SeasonBoard,
+  type SeasonProfile,
+} from '../net/SeasonApi';
 import { Title } from '../ui/Title';
 import { RoundView } from '../ui/RoundView';
 import { type Button, drawButton, hitButton } from '../ui/Button';
@@ -36,6 +49,24 @@ function loadAvatar(path: string | null): HTMLImageElement | null {
   const img = new Image();
   img.src = `${apiBase()}${path}`;
   return img;
+}
+
+/** Compact countdown: "3d 4h" · "4h 12m" · "12m" (client renders local-agnostic). */
+function fmtDuration(ms: number): string {
+  const mins = Math.max(1, Math.ceil(ms / 60_000));
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+/** "2026-07" → "July" (season display name — PRD §5.C). */
+function seasonName(id: string): string {
+  const m = Number(id.slice(5, 7));
+  const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  return names[m - 1] ?? id;
 }
 
 /**
@@ -67,6 +98,23 @@ export class Game {
   private leaderboardError = false;
   /** Where the leaderboard was opened from, so Back returns there (result vs title). */
   private leaderboardFrom: Screen = 'title';
+
+  // Seasonal scoring + Rush Tokens (PRD-SCORING-TOKENS Phase A).
+  /** Live season profile — null in plain-browser dev (no gctx) → free play only. */
+  private profile: SeasonProfile | null = null;
+  /** Single-use ranked matchToken from POST /match/start; null once spent. */
+  private matchToken: string | null = null;
+  /** Per-round log submitted to /match/result (server recomputes RP from it). */
+  private roundsLog: RoundOut[] = [];
+  /** RP submission state rendered on the result screen. */
+  private rpResult: RpOutcome | 'pending' | 'failed' | null = null;
+  /** Guards double-taps while POST /match/start is in flight. */
+  private startPending = false;
+  /** Transient notice (out of tokens / start failed) on title + level select. */
+  private notice: { text: string; until: number } | null = null;
+  /** Seasonal leaderboard payload (podium + rows); null → legacy board fallback. */
+  private boardData: SeasonBoard | null = null;
+  private readonly avatarCache = new Map<number, HTMLImageElement>();
 
   // Async duel (SPEC §4): the seed both players share + the incoming challenger.
   private matchSeed = 0;
@@ -163,6 +211,8 @@ export class Game {
     // Decision time for the tiebreaks; a timeout costs the full window.
     const ms = Math.round((CONFIG.DECISION_SECONDS - r.decisionLeft) * 1000);
     this.totalMs += ms;
+    // Ranked round log — /match/result recomputes RP from exactly this (PRD §8.3).
+    this.roundsLog.push({ n: r.index + 1, call: r.call, correct: r.correct, ms });
     // Live duel: report this round to the server (it relays + scores the match).
     if (this.live && this.mp) this.mp.sendRound(r.index + 1, r.correct, ms);
     if (r.correct) {
@@ -204,6 +254,17 @@ export class Game {
       this.mode = 'challenge';
       this.level = levelById(this.opponent.level); // play the challenger's level
     }
+    // Season profile (tokens / streak / rank) — null in plain-browser dev.
+    void fetchProfile().then((p) => {
+      this.profile = p;
+    });
+  }
+
+  private refreshProfile(): void {
+    if (!this.profile) return;
+    void fetchProfile().then((p) => {
+      if (p) this.profile = p;
+    });
   }
 
   private startMatch(mode: Mode, level: Level, seed?: number): void {
@@ -225,6 +286,8 @@ export class Game {
     this.reserve = picked.slice(CONFIG.ROUNDS);
     this.live = seed !== undefined;
     this.totalMs = 0;
+    this.roundsLog = [];
+    this.rpResult = null;
     this.roundView.reset();
     this.combo = 0;
     this.bestCombo = 0;
@@ -232,6 +295,89 @@ export class Game {
     this.verdictFired = false;
     this.lastRoundIndex = -1;
     this.screen = 'round';
+  }
+
+  // ---- seasonal ranked flow (PRD-SCORING-TOKENS Phase A) -------------------
+
+  private showNotice(text: string, seconds = 6): void {
+    this.notice = { text, until: this.pulse + seconds };
+  }
+
+  /** Spend a Rush Token via POST /match/start, then launch the chosen flavor. */
+  private startRanked(flavor: RankedMode, level: Level): void {
+    if (this.startPending) return;
+    this.startPending = true;
+    matchStart(flavor, level.id)
+      .then((res) => {
+        this.startPending = false;
+        if (res.ok) {
+          this.matchToken = res.matchToken;
+          if (this.profile) this.profile.tokens = res.tokens;
+          if (flavor === 'live') this.enterLobby(level);
+          else this.startMatch(flavor === 'quick' ? 'practice' : 'challenge', level);
+        } else {
+          if (this.profile) this.profile.tokens = 0;
+          this.screen = 'title';
+          this.showNotice(COPY.outOfTokens(fmtDuration(res.refillAt - Date.now())));
+        }
+      })
+      .catch(() => {
+        this.startPending = false;
+        this.showNotice(COPY.startFailed);
+      });
+  }
+
+  /** Submit the ranked result; the server recomputes RP from the round log. */
+  private submitRp(won: boolean, oppKind: OppKind): void {
+    const mt = this.matchToken;
+    if (!mt) return;
+    this.matchToken = null; // single-use — never submit twice
+    this.rpResult = 'pending';
+    matchResult(mt, this.roundsLog, won, oppKind)
+      .then((r) => {
+        this.rpResult = r;
+        if (this.profile) {
+          this.profile.rp = r.seasonRp;
+          this.profile.rank = r.rank;
+          this.profile.tokens = r.tokens;
+        }
+      })
+      .catch(() => {
+        this.rpResult = 'failed';
+      });
+  }
+
+  /** Refund the token if the match died before round 1 resolved (PRD §5.A). */
+  private refundIfUnplayed(): void {
+    const mt = this.matchToken;
+    if (!mt || this.roundsLog.length > 0) return;
+    this.matchToken = null;
+    void matchAbort(mt).then((tokens) => {
+      if (tokens !== null && this.profile) this.profile.tokens = tokens;
+    });
+  }
+
+  /** Bank base RP for a live match the player is abandoning (no final verdict yet):
+   *  played rounds still count; the win bonus only if a final already declared it. */
+  private flushPendingRp(): void {
+    if (!this.matchToken) return;
+    if (this.roundsLog.length === 0) {
+      this.refundIfUnplayed();
+      return;
+    }
+    const won = this.mpFinal?.winner === 'you';
+    this.submitRp(won, this.mpMatched?.oppAi ? 'ai' : 'human');
+  }
+
+  /** Async duel outcome vs the challenge link (same rule the result screen shows). */
+  private asyncWon(): boolean {
+    if (!this.match || !this.opponent) return false;
+    const mine = this.match.correctCount;
+    const opp = this.opponent.score;
+    if (mine !== opp) return mine > opp;
+    const oppMs = this.opponent.timeMs;
+    if (oppMs && this.totalMs > 0 && Math.round(this.totalMs) !== oppMs) return this.totalMs < oppMs;
+    return false;
   }
 
   // ---- live 1-v-1 matchmaking ---------------------------------------------
@@ -296,6 +442,10 @@ export class Game {
     this.mpFinal = f;
     if (f.winner === 'you') this.audio.win();
     else if (f.winner === 'opp') this.audio.loss();
+    // Ranked live duel: the verdict is in — submit the RP result now (win bonus
+    // halves vs an AI fill — PRD §5.B).
+    if (this.matchToken)
+      this.submitRp(f.winner === 'you', this.mpMatched?.oppAi ? 'ai' : 'human');
     // Forfeit can land mid-round — jump to the result; a normal final lands while
     // we're already on (or headed to) the result screen.
     if (f.forfeit) this.screen = 'result';
@@ -311,11 +461,15 @@ export class Game {
         this.mpRetryAt = this.pulse + 1.5;
         return;
       }
+      this.refundIfUnplayed(); // ranked queue died before round 1 → token back
       this.screen = 'levelSelect';
       this.mpErrorUntil = this.pulse + 6; // level select explains what happened
       return;
     }
-    if (this.screen === 'vs') this.screen = 'levelSelect';
+    if (this.screen === 'vs') {
+      this.refundIfUnplayed();
+      this.screen = 'levelSelect';
+    }
     // Mid-match: the render shows "connection lost" on the result if no final came.
   }
 
@@ -323,15 +477,21 @@ export class Game {
     this.mpRetryAt = 0;
     this.mp?.leave();
     this.mp = null;
+    this.refundIfUnplayed(); // deliberate exit before a match → token back (PRD §5.A)
     this.screen = 'levelSelect';
   }
 
   private finishMatch(): void {
-    // Quick Play feeds the GLOBAL leaderboard (difficulty-weighted: a correct call is
-    // worth more on a harder level — SPEC §5). A challenge is a PRIVATE head-to-head
-    // between the two friends (compared via the shared link), so it does NOT post to
-    // the global board.
-    if (this.match && this.mode === 'practice') {
+    if (this.matchToken) {
+      // Ranked (seasonal RP — PRD §5.B). Quick Play is solo; an incoming async
+      // duel resolves vs the challenger's real linked result; an outgoing async
+      // challenge has no verified opponent yet → base RP only, no win bonus.
+      // Live duels submit when the server's final verdict lands (onMpFinal).
+      if (this.mode === 'practice') this.submitRp(false, 'none');
+      else if (this.mode === 'challenge' && !this.live)
+        this.submitRp(this.opponent ? this.asyncWon() : false, this.opponent ? 'human' : 'none');
+    } else if (this.match && this.mode === 'practice') {
+      // Legacy path (plain-browser dev / stale clients): best-score board.
       void this.adapter.submitScore(this.match.correctCount * this.level.weight);
     }
     this.screen = 'result';
@@ -340,10 +500,45 @@ export class Game {
   private enterLeaderboard(): void {
     this.leaderboardFrom = this.screen;
     this.screen = 'leaderboard';
-    this.loadLeaderboard(true);
+    if (this.profile) this.loadBoard(true);
+    else this.loadLeaderboard(true);
   }
 
-  /** Fetch the board; one silent retry on failure, then a visible error state. */
+  /** Seasonal board (podium + season rows — PRD §5.C); one silent retry. */
+  private loadBoard(retryOnce: boolean): void {
+    this.leaderboardLoading = true;
+    this.leaderboardError = false;
+    fetchBoard()
+      .then((b) => {
+        this.boardData = b;
+        this.leaderboardLoading = false;
+        // Pre-warm avatars for the podium + visible rows (never-broken fallback).
+        for (const e of b.hallOfFame) this.avatarFor(e.u);
+        for (const r of b.rows.slice(0, 12)) this.avatarFor(r.u);
+      })
+      .catch(() => {
+        if (retryOnce) {
+          setTimeout(() => {
+            if (this.screen === 'leaderboard') this.loadBoard(false);
+          }, 1200);
+          return;
+        }
+        this.leaderboardLoading = false;
+        this.leaderboardError = true;
+      });
+  }
+
+  private avatarFor(u: number): HTMLImageElement {
+    let img = this.avatarCache.get(u);
+    if (!img) {
+      img = new Image();
+      img.src = `${apiBase()}/avatar/${u}`;
+      this.avatarCache.set(u, img);
+    }
+    return img;
+  }
+
+  /** Legacy best-score board (plain-browser dev); one silent retry on failure. */
   private loadLeaderboard(retryOnce: boolean): void {
     this.leaderboardLoading = true;
     this.leaderboardError = false;
@@ -407,12 +602,65 @@ export class Game {
           // Return to where the board was opened from: after a match that's the
           // result screen (the player's score) — Main Menu lives there.
           this.screen = this.leaderboardFrom === 'result' && this.match ? 'result' : 'title';
+        } else if (this.boardData && this.hitRect(this.prizesChipRect(), px, py)) {
+          this.audio.coin();
+          this.screen = 'prizes';
+        }
+        break;
+      case 'prizes':
+        if (hitButton(this.backButtons(), px, py) === 'back') {
+          this.audio.coin();
+          this.screen = this.boardData ? 'leaderboard' : 'title';
         }
         break;
     }
   }
 
+  private hitRect(r: { x: number; y: number; w: number; h: number }, px: number, py: number): boolean {
+    return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+  }
+
+  /** Season chips row (top-left, mirrors the mute chip): tokens · streak · countdown. */
+  private chipRects(): Array<{ id: 'tokens' | 'streak' | 'season'; x: number; y: number; w: number; h: number }> {
+    if (!this.profile) return [];
+    const out: Array<{ id: 'tokens' | 'streak' | 'season'; x: number; y: number; w: number; h: number }> = [];
+    let x = 12;
+    const add = (id: 'tokens' | 'streak' | 'season', w: number): void => {
+      out.push({ id, x, y: 12, w, h: 26 });
+      x += w + 8;
+    };
+    add('tokens', 62);
+    if (this.profile.multiplier > 1) add('streak', 64);
+    add('season', 70);
+    return out;
+  }
+
+  private prizesChipRect(): { x: number; y: number; w: number; h: number } {
+    return { x: 12, y: 12, w: 78, h: 26 };
+  }
+
+  /** Shared chip taps on title / level select: tokens → refill info, season → prizes. */
+  private onChipTap(px: number, py: number): boolean {
+    for (const c of this.chipRects()) {
+      if (!this.hitRect(c, px, py)) continue;
+      this.audio.coin();
+      if (c.id === 'season') this.screen = 'prizes';
+      else if (c.id === 'tokens' && this.profile) {
+        this.showNotice(
+          this.profile.tokens <= 0
+            ? COPY.outOfTokens(fmtDuration(this.profile.refillAt - Date.now()))
+            : COPY.tokenCost,
+        );
+      } else if (this.profile) {
+        this.showNotice(COPY.rpMultiplier(this.profile.multiplier));
+      }
+      return true;
+    }
+    return false;
+  }
+
   private onTapTitle(px: number, py: number): void {
+    if (this.onChipTap(px, py)) return;
     // The small brand-CTA chip (the campaign funnel, kept light).
     const cr = this.title.ctaRect(this.vp);
     if (px >= cr.x && px <= cr.x + cr.w && py >= cr.y && py <= cr.y + cr.h) {
@@ -420,16 +668,26 @@ export class Game {
       this.adapter.openLink(SIGNUP_URL);
       return;
     }
-    const id = hitButton(this.title.buttons(this.vp), px, py);
+    const id = hitButton(this.title.buttons(this.vp, !!this.profile), px, py);
     if (!id) return;
     this.audio.coin();
     if (id === 'leaderboard') {
       this.enterLeaderboard();
+    } else if (id === 'free') {
+      this.pendingMode = 'free';
+      this.screen = 'levelSelect';
     } else if (id === 'challenge' || id === 'practice') {
+      // Ranked modes need a Rush Token; with 0 left, explain and point at
+      // free Practice instead of a dead tap (PRD Story 1).
+      if (this.profile && this.profile.tokens <= 0) {
+        this.showNotice(COPY.outOfTokens(fmtDuration(this.profile.refillAt - Date.now())));
+        return;
+      }
       // An incoming challenge fixes the level (must match the challenger); otherwise
       // let the player pick a level first.
       if (id === 'challenge' && this.opponent) {
-        this.startMatch('challenge', this.level);
+        if (this.profile) this.startRanked('duel', this.level);
+        else this.startMatch('challenge', this.level);
       } else {
         this.pendingMode = id;
         this.screen = 'levelSelect';
@@ -438,6 +696,7 @@ export class Game {
   }
 
   private onTapLevelSelect(px: number, py: number): void {
+    if (this.onChipTap(px, py)) return;
     if (hitButton(this.backButtons(), px, py) === 'back') {
       this.audio.coin();
       this.screen = 'title';
@@ -447,12 +706,31 @@ export class Game {
       const r = this.levelCardRect(lv);
       if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
         this.audio.coin();
-        // Multiplayer queues for a live opponent on this level; Quick Play starts.
-        if (this.pendingMode === 'challenge') this.enterLobby(lv);
-        else this.startMatch(this.pendingMode, lv);
+        this.beginFromLevel(lv);
         return;
       }
     }
+  }
+
+  /** Launch the pending mode on the chosen level: free = no token; ranked = spend
+   *  a Rush Token via /match/start first (PRD §5.A). Multiplayer queues a live duel. */
+  private beginFromLevel(lv: Level): void {
+    if (this.pendingMode === 'free') {
+      this.startMatch('free', lv);
+      return;
+    }
+    if (this.profile) {
+      if (this.profile.tokens <= 0) {
+        this.screen = 'title';
+        this.showNotice(COPY.outOfTokens(fmtDuration(this.profile.refillAt - Date.now())));
+        return;
+      }
+      this.startRanked(this.pendingMode === 'challenge' ? 'live' : 'quick', lv);
+      return;
+    }
+    // Plain-browser dev (no season backend): the legacy free flow.
+    if (this.pendingMode === 'challenge') this.enterLobby(lv);
+    else this.startMatch(this.pendingMode, lv);
   }
 
   private onTapRound(px: number, py: number): void {
@@ -507,21 +785,31 @@ export class Game {
     if (id === 'cta') {
       this.adapter.openLink(SIGNUP_URL);
     } else if (id === 'rematch') {
-      if (this.live) {
-        // Live duel rematch = requeue on the same level for a fresh opponent.
-        this.enterLobby(this.level);
+      if (this.mode === 'challenge') this.opponent = null; // a fresh challenge to send
+      // Free practice replays for free; ranked replays spend another Rush Token.
+      if (this.mode === 'free' || !this.profile) {
+        if (this.live) this.enterLobby(this.level);
+        else this.startMatch(this.mode, this.level);
         return;
       }
-      if (this.mode === 'challenge') this.opponent = null; // a fresh challenge to send
-      this.startMatch(this.mode, this.level);
+      if (this.profile.tokens <= 0) {
+        this.screen = 'title';
+        this.showNotice(COPY.outOfTokens(fmtDuration(this.profile.refillAt - Date.now())));
+        return;
+      }
+      this.startRanked(this.live ? 'live' : this.mode === 'challenge' ? 'duel' : 'quick', this.level);
     } else if (id === 'leaderboard') {
       this.enterLeaderboard();
     } else if (id === 'share') {
       this.shareResult();
     } else if (id === 'menu') {
+      // Safety net: if a live ranked match never got a server final (client
+      // dropped), still bank the base RP for the rounds actually played.
+      this.flushPendingRp();
       this.mp?.dispose();
       this.mp = null;
       this.live = false;
+      this.refreshProfile();
       this.screen = 'title';
     }
   }
@@ -609,9 +897,12 @@ export class Game {
       const banner = this.opponent
         ? COPY.incomingChallenge(this.opponent.name, this.opponent.score, CONFIG.ROUNDS)
         : null;
-      this.title.render(ctx, this.vp, this.pulse, banner);
+      const locked =
+        this.profile && this.profile.tokens <= 0 ? new Set(['challenge', 'practice']) : undefined;
+      this.title.render(ctx, this.vp, this.pulse, banner, { includeFree: !!this.profile, locked });
     }
     else if (this.screen === 'levelSelect') this.renderLevelSelect();
+    else if (this.screen === 'prizes') this.renderPrizes();
     else if (this.screen === 'lobby') this.renderLobby();
     else if (this.screen === 'vs') this.renderVs();
     else if (this.screen === 'round' && this.match) {
@@ -632,8 +923,56 @@ export class Game {
     } else if (this.screen === 'result') this.renderResult();
     else if (this.screen === 'leaderboard') this.renderLeaderboard();
 
+    // Season HUD chips (tokens/streak/countdown) + transient notice sit above the
+    // title & level-select screens, alongside the mute chip.
+    if (this.screen === 'title' || this.screen === 'levelSelect') {
+      this.renderChips();
+      this.renderNotice();
+    }
+
     this.particles.render(ctx);
     this.renderMute();
+  }
+
+  /** Top-left season chips: ⚡tokens · 🔥streak · ⏳countdown (PRD §7 title HUD). */
+  private renderChips(): void {
+    if (!this.profile) return;
+    const { ctx } = this.vp;
+    ctx.textBaseline = 'middle';
+    for (const c of this.chipRects()) {
+      roundRectPath(ctx, c.x, c.y, c.w, c.h, 13);
+      const low = c.id === 'tokens' && this.profile.tokens <= 0;
+      ctx.fillStyle = low ? 'rgba(234,57,67,0.18)' : 'rgba(23,31,58,0.75)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = low ? colors.down : colors.border;
+      ctx.stroke();
+      ctx.fillStyle = c.id === 'tokens' ? (low ? colors.down : colors.rebateGold) : colors.text;
+      ctx.font = `${fonts.weight.bold} 11px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      const label =
+        c.id === 'tokens'
+          ? COPY.tokens(this.profile.tokens, 10)
+          : c.id === 'streak'
+            ? COPY.streakChip(this.profile.multiplier)
+            : COPY.seasonEndsShort(fmtDuration(this.profile.season.endsAt - Date.now()));
+      ctx.fillText(label, c.x + c.w / 2, c.y + c.h / 2 + 0.5);
+    }
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /** Transient one-line notice (out of tokens / start failed / streak info). */
+  private renderNotice(): void {
+    if (!this.notice || this.pulse >= this.notice.until) return;
+    const { ctx, w } = this.vp;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+    wrapText(ctx, this.notice.text, Math.min(w * 0.82, 340)).forEach((ln, i) =>
+      ctx.fillText(ln, w / 2, 52 + i * 15),
+    );
+    ctx.textAlign = 'left';
   }
 
   /** Small global SFX toggle, top-right on every screen (SPEC §9: mute). */
@@ -697,7 +1036,11 @@ export class Game {
     ctx.fillText(COPY.chooseLevel, cx, h * 0.2);
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
-    ctx.fillText(COPY.chooseLevelHint, cx, h * 0.2 + 24);
+    ctx.fillText(
+      this.pendingMode === 'free' ? COPY.chooseLevelFreeHint : COPY.chooseLevelHint,
+      cx,
+      h * 0.2 + 24,
+    );
 
     // Transient notice after multiplayer gave up reconnecting.
     if (this.pulse < this.mpErrorUntil) {
@@ -741,11 +1084,15 @@ export class Game {
         ctx.fillStyle = i < lv.weight ? lv.color : 'rgba(138,148,166,0.3)';
         ctx.fill();
       }
-      // Points-per-correct badge top-right.
+      // RP-per-correct badge top-right (or "Free · no RP" in free practice).
       ctx.textAlign = 'right';
-      ctx.fillStyle = colors.rebateGold;
+      ctx.fillStyle = this.pendingMode === 'free' ? colors.textMuted : colors.rebateGold;
       ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
-      ctx.fillText(COPY.ptsPerCorrect(lv.weight), r.x + r.w - 18, r.y + 30);
+      ctx.fillText(
+        this.pendingMode === 'free' ? COPY.freeNoRp : COPY.ptsPerCorrect(lv.weight),
+        r.x + r.w - 18,
+        r.y + 30,
+      );
     }
 
     for (const b of this.backButtons()) drawButton(ctx, b);
@@ -925,11 +1272,15 @@ export class Game {
       ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}${streak}`, cx, h * 0.36);
     }
 
+    // Ranked RP earned + season total + rank delta (PRD Story 2). Only for ranked
+    // matches (rpResult set); free practice and legacy dev skip it.
+    if (this.rpResult) this.renderRp(cx, h);
+
     ctx.fillStyle = 'rgba(245,196,81,0.9)';
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
     ctx.textAlign = 'center';
     wrapText(ctx, COPY.rebateReminder, Math.min(w * 0.82, 340)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.47 + i * 18),
+      ctx.fillText(ln, cx, h * 0.475 + i * 16),
     );
 
     for (const b of this.resultButtons()) drawButton(ctx, b);
@@ -940,6 +1291,36 @@ export class Game {
       ctx.fillText(ln, cx, h * 0.955 + i * 13),
     );
     ctx.textAlign = 'left';
+  }
+
+  /** Ranked RP strip on the result screen (PRD Story 2): +RP · season total · rank Δ. */
+  private renderRp(cx: number, h: number): void {
+    const { ctx } = this.vp;
+    ctx.textAlign = 'center';
+    const r = this.rpResult;
+    if (!r) return;
+    if (r === 'pending') {
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+      ctx.fillText(COPY.rpPending, cx, h * 0.405);
+      return;
+    }
+    if (r === 'failed') {
+      ctx.fillStyle = colors.down;
+      ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+      ctx.fillText(COPY.rpFailed, cx, h * 0.405);
+      return;
+    }
+    if (typeof r === 'string') return;
+    // Big +RP with the delta chip beside it.
+    ctx.fillStyle = colors.up;
+    ctx.font = `${fonts.weight.black} 22px ${fonts.family}`;
+    ctx.fillText(COPY.rpEarned(r.rp), cx, h * 0.405);
+    // Season total + rank (with a → delta when the rank moved up).
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
+    const delta = r.rankDelta > 0 ? `  ·  ${COPY.rankDelta(r.rank + r.rankDelta, r.rank)}` : '';
+    ctx.fillText(`${COPY.seasonTotal(r.seasonRp, r.rank)}${delta}`, cx, h * 0.405 + 20);
   }
 
   /** Live 1-v-1 result: the server's verdict (or "waiting" until it lands). */
@@ -1021,6 +1402,262 @@ export class Game {
   }
 
   private renderLeaderboard(): void {
+    if (this.boardData || this.profile) {
+      this.renderSeasonBoard();
+      return;
+    }
+    this.renderLegacyBoard();
+  }
+
+  // Medal palette for the top 3 (gold/silver/bronze — PRD §5.C).
+  private static readonly MEDALS = ['#F5C451', '#C7CEDA', '#CD8B5A'];
+  private static readonly MEDAL_ICONS = ['🥇', '🥈', '🥉'];
+
+  /** Seasonal board: Hall of Fame podium → season name + countdown → RP rows. */
+  private renderSeasonBoard(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+    const b = this.boardData;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.07, 26)}px ${fonts.family}`;
+    ctx.fillText(COPY.leaderboard, cx, h * 0.09);
+
+    // Prizes entry (tappable chip, top-left) — the funnel is always one tap away.
+    const pr = this.prizesChipRect();
+    roundRectPath(ctx, pr.x, pr.y, pr.w, pr.h, 13);
+    ctx.fillStyle = 'rgba(245,196,81,0.1)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(245,196,81,0.5)';
+    ctx.stroke();
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 11px ${fonts.family}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`🏆 ${COPY.prizes}`, pr.x + pr.w / 2, pr.y + pr.h / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
+
+    let y = h * 0.14;
+
+    // Hall of Fame podium (previous season's top 3), when there is one.
+    if (b && b.hallOfFame.length > 0) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.semibold} 11px ${fonts.family}`;
+      ctx.fillText(COPY.hallOfFame.toUpperCase(), cx, y);
+      y += 12;
+      const slots = b.hallOfFame.slice(0, 3);
+      const spread = Math.min(w * 0.26, 108);
+      // Order 2·1·3 so #1 sits centered and largest.
+      const order = slots.length === 3 ? [slots[1]!, slots[0]!, slots[2]!] : slots;
+      order.forEach((e, i) => {
+        const px = cx + (i - (order.length - 1) / 2) * spread;
+        const isFirst = e.rank === 1;
+        const rr = isFirst ? 30 : 24;
+        const py = y + (isFirst ? 30 : 38);
+        this.drawAvatarCircle(px, py, rr, e.u, e.name, Game.MEDALS[e.rank - 1]!);
+        ctx.textAlign = 'center';
+        ctx.font = `${fonts.weight.black} 16px ${fonts.family}`;
+        ctx.fillText(Game.MEDAL_ICONS[e.rank - 1]!, px, py - rr - 4);
+        ctx.fillStyle = colors.text;
+        ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
+        ctx.fillText(this.ellipsize(e.name, 10), px, py + rr + 15);
+        ctx.fillStyle = Game.MEDALS[e.rank - 1]!;
+        ctx.font = `${fonts.weight.bold} 11px ${fonts.family}`;
+        ctx.fillText(`${e.rp.toLocaleString('en-US')} RP`, px, py + rr + 29);
+      });
+      y += 96;
+    }
+
+    // Season name + countdown.
+    if (b) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
+      ctx.fillText(COPY.seasonLabel(seasonName(b.season.id)), cx, y);
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+      ctx.fillText(COPY.seasonEndsIn(fmtDuration(b.season.endsAt - Date.now())), cx, y + 15);
+      y += 30;
+    }
+
+    const listX = w * 0.1;
+    const listW = w * 0.8;
+    const rowH = 38;
+    const bottomLimit = h * 0.8;
+
+    if (this.leaderboardError) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.down;
+      ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+      wrapText(ctx, COPY.lbError, Math.min(w * 0.82, 340)).forEach((ln, i) =>
+        ctx.fillText(ln, cx, y + 24 + i * 18),
+      );
+    } else if (this.leaderboardLoading || !b) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 14px ${fonts.family}`;
+      ctx.fillText('Loading…', cx, y + 24);
+    } else if (b.rows.length === 0) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 14px ${fonts.family}`;
+      ctx.fillText('Be the first to score this season.', cx, y + 24);
+    } else {
+      const maxRows = Math.max(3, Math.floor((bottomLimit - y) / rowH));
+      const selfVisible = b.rows.slice(0, maxRows).some((r) => r.isSelf);
+      const visible = b.rows.slice(0, selfVisible || !b.self ? maxRows : maxRows - 1);
+      for (const row of visible) {
+        this.drawBoardRow(row, listX, y, listW, rowH);
+        y += rowH;
+      }
+      // Pin the self row below the list when outside the visible window (PRD Story 4).
+      if (!selfVisible && b.self) {
+        y += 4;
+        this.drawBoardRow(
+          { rank: b.self.rank, u: 0, name: COPY.yourRankName, rp: b.self.rp, isSelf: true },
+          listX,
+          y,
+          listW,
+          rowH,
+        );
+      }
+    }
+
+    for (const bt of this.backButtons()) drawButton(ctx, bt);
+    ctx.textAlign = 'left';
+  }
+
+  /** One seasonal row: rank (medal-tinted for top 3), avatar, name, RP. */
+  private drawBoardRow(
+    row: { rank: number; u: number; name: string; rp: number; isSelf: boolean },
+    x: number,
+    y: number,
+    listW: number,
+    rowH: number,
+  ): void {
+    const { ctx } = this.vp;
+    const medal = row.rank <= 3 ? Game.MEDALS[row.rank - 1]! : null;
+    const my = y + (rowH - 6) / 2;
+    roundRectPath(ctx, x, y, listW, rowH - 6, 10);
+    ctx.fillStyle = row.isSelf
+      ? 'rgba(245,196,81,0.14)'
+      : medal
+        ? `${medal}22`
+        : 'rgba(23,31,58,0.7)';
+    ctx.fill();
+    if (row.isSelf || medal) {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = row.isSelf ? 'rgba(245,196,81,0.6)' : `${medal}66`;
+      ctx.stroke();
+    }
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = medal ?? (row.isSelf ? colors.rebateGold : colors.textMuted);
+    ctx.font = `${fonts.weight.black} 13px ${fonts.family}`;
+    ctx.fillText(row.rank <= 3 ? Game.MEDAL_ICONS[row.rank - 1]! : `${row.rank}`, x + 12, my);
+    // Avatar (skip the synthetic pinned self row that has no real uid=0).
+    let nameX = x + 40;
+    if (row.u > 0) {
+      this.drawAvatarCircle(x + 46, my, 12, row.u, row.name, medal ?? colors.border);
+      nameX = x + 66;
+    }
+    ctx.textAlign = 'left';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
+    ctx.fillText(this.ellipsize(row.name, 14), nameX, my);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
+    ctx.fillText(`${row.rp.toLocaleString('en-US')}`, x + listW - 12, my);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /** Circular avatar (cached photo or initial-letter fallback — never broken). */
+  private drawAvatarCircle(x: number, y: number, r: number, u: number, name: string, ring: string): void {
+    const { ctx } = this.vp;
+    const img = this.avatarFor(u);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = colors.surface;
+    ctx.fill();
+    ctx.clip();
+    if (img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, x - r, y - r, r * 2, r * 2);
+    } else {
+      ctx.fillStyle = ring;
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = colors.text;
+      ctx.font = `${fonts.weight.black} ${r}px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText((name[0] ?? '?').toUpperCase(), x, y + 1);
+    }
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = ring;
+    ctx.stroke();
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  private ellipsize(s: string, max: number): string {
+    return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  }
+
+  /** Prizes sheet (PRD §5.D): 100/90/80% shares, eligibility floor, terms. */
+  private renderPrizes(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.07, 26)}px ${fonts.family}`;
+    ctx.fillText(COPY.prizesTitle, cx, h * 0.12);
+
+    let y = h * 0.22;
+    const cardW = Math.min(w * 0.84, 360);
+    const cardX = cx - cardW / 2;
+    COPY.prizeLines.forEach((line, i) => {
+      const ch = 44;
+      roundRectPath(ctx, cardX, y, cardW, ch, 12);
+      ctx.fillStyle = `${Game.MEDALS[i]!}1e`;
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = `${Game.MEDALS[i]!}66`;
+      ctx.stroke();
+      ctx.fillStyle = colors.text;
+      ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(line, cx, y + ch / 2 + 5);
+      y += ch + 10;
+    });
+
+    y += 6;
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
+    const lines = [COPY.prizeDefinition, COPY.prizeFloor, COPY.prizeClaim, COPY.prizeTokensNote];
+    for (const para of lines) {
+      const wrapped = wrapText(ctx, para, Math.min(w * 0.84, 350));
+      wrapped.forEach((ln) => {
+        ctx.fillText(ln, cx, y);
+        y += 15;
+      });
+      y += 6;
+    }
+
+    for (const bt of this.backButtons()) drawButton(ctx, bt);
+    ctx.textAlign = 'left';
+  }
+
+  private renderLegacyBoard(): void {
     const { ctx, w, h } = this.vp;
     const cx = w / 2;
 

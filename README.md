@@ -79,6 +79,29 @@ bot verifies the HMAC, clamps, and calls **`setGameScore`**; the in-game board r
 **`getGameHighScores`** via `GET /highscores`. Client scores are untrusted (signed
 context + clamp + per-user rate limit).
 
+**Seasonal scoring & Rush Tokens** (`PRD-SCORING-TOKENS.md`, Phase A). The best-score
+board is superseded by a **cumulative, monthly-reset Rush Points (RP)** system gated by
+**10 daily Rush Tokens** (00:00 UTC refill, 1 token per ranked match, free unlimited
+Practice). All server-authoritative — no new env, reuses `SCORE_SECRET`; state persists
+to `.data/seasons.json` (atomic writes; single pm2 instance). API (`packages/bot`):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /profile?gctx=` | tokens, streak ×multiplier, season, RP, rank |
+| `POST /match/start` | atomically spend a token → single-use `matchToken` (402 when out) |
+| `POST /match/result` | server recomputes RP from the round log (replay → 409) |
+| `POST /match/abort` | refund a token if the match died before round 1 |
+| `GET /leaderboard?gctx=` | season rows + Hall of Fame podium (prev top 3) + self |
+| `GET /prizes` | previous season's winners + claim state |
+
+RP = `Σ correct × (10·weight)` + flawless + duel-win (halved vs AI fill) + win-streak,
+all `× daily-streak multiplier` (cap ×1.25), hard-capped per match. Season close is lazy
+(first request after a month boundary): archives the top 3, writes prizes (100/90/80%
+rebate share for the eligible top 3, ≥20-match floor) + an ops report, opens the new
+season at 0 RP. Winners are DM'd and claim via the bot's `/link` command. `/score` +
+`/highscores` remain for backward-compat during rollout. Math is unit-tested
+(`_rptest.ts`); RP is never trusted from the client (recomputed + clamped).
+
 **Deploy:** frontend (`npm run build -w @rebate-rush/game`) to Cloudflare Pages /
 Vercel (HTTPS); bot to Railway / Render / Fly (set env; switch long polling to a
 webhook for production).
@@ -112,7 +135,14 @@ webhook for production).
   per-user rate limit, CORS. README: BotFather + env + run + deploy. **Remaining:** Mini
   App (`startapp`) adapter for the deep-link duel, server-side duel match endpoints, and
   the perf/safe-area/webview hardening pass.
-- [ ] Phase 7 — *(later)* real-time live duel
+- [~] **Phase 7 — seasonal scoring, tokens & rebate prizes** (`PRD-SCORING-TOKENS.md`):
+  Phase A shipped — daily Rush Tokens + `/match/start`→`matchToken`, cumulative RP
+  (base · flawless · duel-win · win-streak · daily multiplier), monthly seasons with a
+  Hall of Fame podium + top-3 medal styling, rebate-share prizes (100/90/80%) with the
+  bot `/link` claim flow, token/streak/countdown HUD, free Practice, and an in-game
+  Prizes sheet. Server-authoritative (recompute + clamp + single-use tokens);
+  `_rptest.ts` covers the RP math. **Remaining (B/C):** rival/Happy-Hour nudges, share
+  cards, daily quests, leagues, server-side round validation, automated prize application.
 
 > Verified locally: HMAC sign/verify/expiry/clamp unit-tested; the score API's routing,
 > CORS, and 401 gate confirmed via curl; bot + game type-check clean. The

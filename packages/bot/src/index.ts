@@ -1,6 +1,7 @@
 import { bot } from './bot';
 import { startServer } from './server';
 import { config } from './config';
+import { onSeasonClose } from './store';
 
 /**
  * Entry point: start the score API, then run the bot via long polling (works
@@ -18,7 +19,23 @@ async function main(): Promise<void> {
   await bot.api.setMyCommands([
     { command: 'play', description: 'Play Bull or Bear' },
     { command: 'start', description: 'Open the game' },
+    { command: 'link', description: 'Link RebateGain to claim season prizes' },
   ]);
+  // Season close → congratulate the winners with the claim CTA (PRD Story 5).
+  // Best-effort: sendMessage works because every player has started the bot.
+  const api = bot.api;
+  onSeasonClose(({ seasonId, prizes }) => {
+    for (const p of prizes) {
+      void api
+        .sendMessage(
+          p.u,
+          `🏆 Season ${seasonId} is over — you finished #${p.rank}!\n` +
+            `Your prize: a ${p.sharePct}% rebate share for the entire next month.\n` +
+            `Claim it within 7 days: send /link to connect your RebateGain account.`,
+        )
+        .catch((e) => console.warn('[season] winner DM failed:', e instanceof Error ? e.message : e));
+    }
+  });
   console.log(`[bot] @${me.username} ready · game "${config.gameShortName}"`);
   await bot.start({ drop_pending_updates: true });
 }

@@ -9,6 +9,7 @@ import { clampScore, rateLimit, verifyContext } from './security';
 import { submitGameScore } from './telegram';
 import { recordScore, topScores } from './leaderboard';
 import { handleMatchmaking } from './matchmaking';
+import { handleSeason } from './seasonRoutes';
 
 // Signed launch tokens: score WRITES stay bounded (replay window), but generous
 // enough that a long play session doesn't silently lose its score — the original
@@ -93,6 +94,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   // Live 1-v-1 matchmaking (plain HTTP polling — proxy-proof; see matchmaking.ts).
   if (await handleMatchmaking(req, res, url, config.allowOrigin)) return;
+
+  // Seasonal scoring + Rush Tokens (PRD-SCORING-TOKENS §8.2; see seasonRoutes.ts).
+  if (await handleSeason(req, res, url, config.allowOrigin)) return;
 
   if (req.method === 'POST' && url.pathname === '/score') {
     const data = JSON.parse((await readBody(req)) || '{}') as { gctx?: string; score?: number };

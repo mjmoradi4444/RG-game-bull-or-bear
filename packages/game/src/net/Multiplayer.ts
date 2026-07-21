@@ -25,6 +25,8 @@ export interface MpMatched {
   level: LevelId;
   you: MpProfile;
   opp: MpProfile;
+  /** AI-fill seat — halves the duel-win RP bonus (PRD §5.B); never shown in the UI. */
+  oppAi: boolean;
 }
 
 export interface MpFinal {
@@ -67,6 +69,7 @@ interface StateResponse {
   expect?: number;
   you?: MpProfile;
   opp?: MpProfile;
+  oppAi?: boolean;
   oppRounds?: Array<{ n: number; correct: boolean }>;
   final?: MpFinal | null;
 }
@@ -145,6 +148,7 @@ export class Multiplayer {
         level: st.level,
         you: st.you,
         opp: st.opp,
+        oppAi: st.oppAi === true,
       });
     }
     const oppRounds = st.oppRounds ?? [];

@@ -24,8 +24,10 @@ export class Title {
     this.lockup.src = '/brand/Logo2.png';
   }
 
-  /** Mode buttons — shared by render and the tap hit-test. */
-  buttons(vp: Viewport): Button[] {
+  /** Mode buttons — shared by render and the tap hit-test. When the seasonal
+   *  profile is live (`includeFree`), free Practice joins Leaderboard on a
+   *  half-width row so the ranked/free split stays visible (PRD §5.A). */
+  buttons(vp: Viewport, includeFree = false): Button[] {
     const bw = Math.min(vp.w * 0.82, 340);
     const bx = vp.w / 2 - bw / 2;
     const bh = 54;
@@ -38,7 +40,14 @@ export class Title {
     };
     add('challenge', COPY.challenge, 'primary');
     add('practice', COPY.practice, 'gold');
-    add('leaderboard', COPY.leaderboard, 'ghost');
+    if (includeFree) {
+      const half = (bw - gap) / 2;
+      const fh = 46;
+      out.push({ id: 'free', x: bx, y, w: half, h: fh, label: COPY.practiceFree, kind: 'ghost' });
+      out.push({ id: 'leaderboard', x: bx + half + gap, y, w: half, h: fh, label: COPY.leaderboard, kind: 'ghost' });
+    } else {
+      add('leaderboard', COPY.leaderboard, 'ghost');
+    }
     return out;
   }
 
@@ -55,6 +64,7 @@ export class Title {
     vp: Viewport,
     pulse: number,
     banner: string | null = null,
+    opts: { includeFree?: boolean; locked?: ReadonlySet<string> } = {},
   ): void {
     const { w, h } = vp;
     const cx = w / 2;
@@ -94,7 +104,15 @@ export class Title {
       ctx.restore();
     }
 
-    for (const b of this.buttons(vp)) drawButton(ctx, b);
+    // Out-of-tokens: ranked buttons render dimmed (still tappable — the tap
+    // explains the refill; Practice stays free — PRD Story 1).
+    for (const b of this.buttons(vp, opts.includeFree)) {
+      const locked = opts.locked?.has(b.id) ?? false;
+      if (locked) ctx.save();
+      if (locked) ctx.globalAlpha = 0.45;
+      drawButton(ctx, b);
+      if (locked) ctx.restore();
+    }
 
     // Small, distinct brand CTA — a gold-rimmed pill with a soft pulse (subtle,
     // not another big button: the campaign hook stays light on the title).

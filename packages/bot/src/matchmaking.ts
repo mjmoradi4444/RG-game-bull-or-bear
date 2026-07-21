@@ -381,6 +381,9 @@ export async function handleMatchmaking(
         expect: m.expect,
         you: side.profile,
         opp: opp.profile,
+        // AI-fill wins pay a halved RP bonus (PRD §5.B) — the client needs to know
+        // which bonus to claim; the UI never announces the opponent as a bot.
+        oppAi: opp.isBot,
         oppRounds: [...opp.rounds.entries()].map(([n, r]) => ({ n, correct: r.correct })),
         final: side.final,
       },

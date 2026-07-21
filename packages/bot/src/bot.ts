@@ -24,6 +24,18 @@ const sendGame = (ctx: { replyWithGame: (n: string) => Promise<unknown> }) =>
 bot?.command('start', sendGame);
 bot?.command('play', sendGame);
 
+// Prize-claim flow (PRD-SCORING-TOKENS §5.D): winners link their RebateGain
+// account to claim the rebate-share boost. Phase A: point at the auth entry; the
+// boost is applied manually in the back office from the season-close report.
+bot?.command('link', async (ctx) => {
+  await ctx.reply(
+    'To claim season prizes, link your RebateGain account:\n' +
+      'https://auth.rebategain.com/login\n\n' +
+      'Sign in (or create an account), then reply here with the email you used. ' +
+      'Prizes are a rebate-share upgrade on real trading — not a cash payout.',
+  );
+});
+
 bot?.on('inline_query', async (ctx) => {
   await ctx.answerInlineQuery([{ type: 'game', id: 'bob', game_short_name: config.gameShortName }], {
     cache_time: 0,
