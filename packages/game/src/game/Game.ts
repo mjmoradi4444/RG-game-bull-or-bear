@@ -157,6 +157,10 @@ export class Game {
   private tasksReturn: Screen = 'title';
   private tasksToast: { text: string; until: number } | null = null;
   private tasksClaiming = false;
+  /** Current page when the list overflows the screen height. */
+  private tasksPage = 0;
+  /** Local unlock times for click-claim links (server echo, survives refetch lag). */
+  private readonly taskUnlocks = new Map<string, number>();
 
   // First-run tutorial (PRD-ONBOARDING-TASKS §5).
   private onboarding: OnboardingView | null = null;
@@ -168,6 +172,8 @@ export class Game {
   /** True once the guided round has been paused at the freeze (so we do it once). */
   private guidedFrozeHandled = false;
   private guidedVerdictHandled = false;
+  /** Challenge-link arrival variant: one micro-intro card, never the full flow (§5.4). */
+  private tutorialMicro = false;
 
   // Async duel (SPEC §4): the seed both players share + the incoming challenger.
   private matchSeed = 0;
@@ -327,13 +333,34 @@ export class Game {
     // Referral attribution: a `ref` deep-link param names the inviter (§7.2).
     const ref = new URLSearchParams(location.hash.replace(/^#/, '')).get('ref') ?? new URLSearchParams(location.search).get('ref');
     if (ref) sendReferral(ref);
-    // First-run tutorial: only brand-new players, never over an incoming challenge
-    // (the duel is the hook — don't block it; §5.4). Local mirror avoids a re-force.
+    // First-run tutorial: only brand-new players. Challenge-link arrivals get the
+    // one-card micro-intro instead — the duel is the hook, don't block it (§5.4).
     void fetchOnboarding().then((o) => {
       this.onboarding = o;
       const done = (o?.tutorialDone ?? false) || (o?.tutorialSkipped ?? false) || localTutorialDone();
-      if (o?.isNew && !done && !this.opponent && this.screen === 'title') this.startTutorial();
+      if (!o?.isNew || done || this.screen !== 'title') return;
+      if (this.opponent) this.tutorialMicro = true;
+      else this.startTutorial(this.savedTutorialStage());
     });
+  }
+
+  /** Mid-tutorial exit resumes at the same STAGE next launch (§5.4). */
+  private savedTutorialStage(): 1 | 2 | 3 {
+    try {
+      const s = Number(localStorage.getItem('bob_tut_stage') ?? '1');
+      return s === 3 ? 3 : s === 2 ? 2 : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  private saveTutorialStage(stage: 1 | 2 | 3 | null): void {
+    try {
+      if (stage === null) localStorage.removeItem('bob_tut_stage');
+      else localStorage.setItem('bob_tut_stage', String(stage));
+    } catch {
+      /* ignore */
+    }
   }
 
   private refreshTasks(): void {
@@ -663,6 +690,10 @@ export class Game {
       return;
     }
 
+    // The challenge-arrival micro-intro is modal until dismissed (§5.4).
+    if (this.tutorialMicro && this.screen === 'title') {
+      if (this.onTapMicroIntro(px, py)) return;
+    }
     // The tutorial overlay takes taps first. Card steps swallow stray taps; the
     // passive gameplay steps (2 & 5) let taps reach the round underneath.
     if (this.tutorialActive) {
@@ -746,19 +777,41 @@ export class Game {
   }
 
   private emailSuggestionRect(): { x: number; y: number; w: number; h: number } {
-    const { w, h } = this.vp;
-    return { x: w * 0.1, y: h * 0.44 + 56, w: w * 0.8, h: 22 };
+    const { w } = this.vp;
+    const L = this.emailLayout();
+    return { x: w * 0.1, y: L.msgY - 14, w: w * 0.8, h: 22 };
   }
 
   private emailCreateRect(): { x: number; y: number; w: number; h: number } {
-    const { w, h } = this.vp;
-    return { x: w * 0.1, y: h * 0.72, w: w * 0.8, h: 22 };
+    const { w } = this.vp;
+    const L = this.emailLayout();
+    return { x: w * 0.1, y: L.createY - 14, w: w * 0.8, h: 22 };
+  }
+
+  /** Flowed prizes-screen layout (title → medal cards → terms → link CTA). */
+  private prizesLayout(): { titleY: number; cardsY: number; cardH: number; gap: number; termsY: number; cta: { x: number; y: number; w: number; h: number } } {
+    const { ctx, w, h } = this.vp;
+    const compact = h < 660;
+    const cardH = compact ? 40 : 44;
+    const gap = compact ? 7 : 10;
+    const titleY = Math.max(52, h * (compact ? 0.08 : 0.11));
+    const cardsY = titleY + (compact ? 20 : 28);
+    const termsY = cardsY + 3 * (cardH + gap) + (compact ? 8 : 14);
+    // Measure the terms block to place the CTA right below it (clamped above Back).
+    ctx.font = `${fonts.weight.medium} ${compact ? 11 : 12}px ${fonts.family}`;
+    const lineH = compact ? 13 : 15;
+    let lines = 0;
+    for (const para of [COPY.prizeDefinition, COPY.prizeFloor, COPY.prizeClaim, COPY.prizeTokensNote]) {
+      lines += wrapText(ctx, para, Math.min(w * 0.84, 350)).length;
+    }
+    const termsH = lines * lineH + 4 * (compact ? 4 : 6);
+    const cw = Math.min(w * 0.84, 360);
+    const ctaY = Math.min(termsY + termsH + 8, h * 0.86 - 54);
+    return { titleY, cardsY, cardH, gap, termsY, cta: { x: w / 2 - cw / 2, y: ctaY, w: cw, h: 44 } };
   }
 
   private prizeLinkCtaRect(): { x: number; y: number; w: number; h: number } {
-    const { w, h } = this.vp;
-    const cw = Math.min(w * 0.84, 360);
-    return { x: w / 2 - cw / 2, y: h * 0.8, w: cw, h: 46 };
+    return this.prizesLayout().cta;
   }
 
   // ---- tasks (PRD-ONBOARDING-TASKS §7) ------------------------------------
@@ -766,6 +819,7 @@ export class Game {
   private enterTasks(from: Screen): void {
     this.tasksReturn = from;
     this.tasksTab = 'daily';
+    this.tasksPage = 0;
     this.screen = 'tasks';
     this.refreshTasks();
   }
@@ -790,30 +844,107 @@ export class Game {
     const gap = 8;
     const totalW = tw * 2 + gap;
     const x0 = w / 2 - totalW / 2;
-    const y = h * 0.18;
+    const y = h * 0.1 + 16;
     return [
       { id: 'daily', x: x0, y, w: tw, h: 38 },
       { id: 'general', x: x0 + tw + gap, y, w: tw, h: 38 },
     ];
   }
 
-  private taskRowRect(i: number): { x: number; y: number; w: number; h: number } {
+  /** Responsive list geometry: rows auto-fit the space between the tabs and the
+   *  Back button; when even the minimum row height overflows, the list paginates. */
+  private tasksLayout(): {
+    listX: number;
+    listW: number;
+    listTop: number;
+    rowH: number;
+    perPage: number;
+    pages: number;
+    pagerY: number;
+  } {
     const { w, h } = this.vp;
-    const rw = Math.min(w * 0.9, 400);
-    return { x: w / 2 - rw / 2, y: h * 0.26 + i * 66, w: rw, h: 58 };
+    const rows = this.taskRows().length || 1;
+    const tabs = this.tasksTabRects()[0]!;
+    const listTop = tabs.y + tabs.h + (this.tasksTab === 'daily' ? 30 : 14);
+    const listBottom = h * 0.86 - 12; // Back button top
+    const avail = Math.max(60, listBottom - listTop);
+    const MIN_ROW = 52;
+    const MAX_ROW = 70;
+    const gap = 8;
+    let perPage = rows;
+    let rowH = Math.floor(avail / rows) - gap;
+    let pages = 1;
+    let pagerY = 0;
+    if (rowH < MIN_ROW) {
+      perPage = Math.max(1, Math.floor((avail - 34) / (MIN_ROW + gap)));
+      rowH = MIN_ROW;
+      pages = Math.ceil(rows / perPage);
+      pagerY = listTop + perPage * (rowH + gap) + 2;
+    } else {
+      rowH = Math.min(MAX_ROW, rowH);
+    }
+    return { listX: w / 2 - Math.min(w * 0.92, 420) / 2, listW: Math.min(w * 0.92, 420), listTop, rowH, perPage, pages, pagerY };
   }
 
-  private taskClaimRect(i: number): { x: number; y: number; w: number; h: number } {
-    const r = this.taskRowRect(i);
-    return { x: r.x + r.w - 92, y: r.y + r.h / 2 - 16, w: 80, h: 32 };
+  private visibleTaskRows(): Array<{ row: TaskRow; rect: { x: number; y: number; w: number; h: number } }> {
+    const rows = this.taskRows();
+    const L = this.tasksLayout();
+    const page = Math.min(this.tasksPage, L.pages - 1);
+    const slice = rows.slice(page * L.perPage, (page + 1) * L.perPage);
+    return slice.map((row, i) => ({
+      row,
+      rect: { x: L.listX, y: L.listTop + i * (L.rowH + 8), w: L.listW, h: L.rowH },
+    }));
   }
 
-  private taskAction(row: TaskRow): 'claim' | 'go' | 'claimed' | 'none' {
+  private taskActionRect(rect: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } {
+    return { x: rect.x + rect.w - 88, y: rect.y + rect.h - 38, w: 78, h: 30 };
+  }
+
+  private taskPagerRects(): { prev: { x: number; y: number; w: number; h: number }; next: { x: number; y: number; w: number; h: number } } | null {
+    const L = this.tasksLayout();
+    if (L.pages <= 1) return null;
+    const { w } = this.vp;
+    return {
+      prev: { x: w / 2 - 84, y: L.pagerY, w: 56, h: 30 },
+      next: { x: w / 2 + 28, y: L.pagerY, w: 56, h: 30 },
+    };
+  }
+
+  /** The unlock time for a click-claim row (server value, local echo as fallback). */
+  private taskUnlockAt(row: TaskRow): number | null {
+    return row.unlocksAt ?? this.taskUnlocks.get(row.id) ?? null;
+  }
+
+  /** What the row's action button should be — mirrors the server's verify rules. */
+  private taskAction(row: TaskRow): 'claim' | 'go' | 'join' | 'wait' | 'claimed' | 'auto' {
     if (row.state === 'claimed') return 'claimed';
     if (row.state === 'completed') return 'claim';
-    if (row.verifyMethod === 'tg_member') return 'claim'; // server verifies membership
-    if (row.url) return 'go';
-    return 'none';
+    if (row.verifyMethod === 'click_claim') {
+      const unlock = this.taskUnlockAt(row);
+      if (row.visited || unlock !== null) return unlock !== null && Date.now() < unlock ? 'wait' : 'claim';
+      return 'go';
+    }
+    if (row.verifyMethod === 'tg_member') {
+      return row.visited || this.taskUnlocks.has(row.id) ? 'claim' : 'join';
+    }
+    return 'auto'; // server-tracked gameplay / flags / referral — no button until done
+  }
+
+  /** One line under the title that tells the player HOW this task is verified. */
+  private taskVerifyHint(row: TaskRow): string {
+    switch (row.verifyMethod) {
+      case 'tg_member':
+        return COPY.taskVerifyTg;
+      case 'click_claim': {
+        const unlock = this.taskUnlockAt(row);
+        return unlock !== null && Date.now() < unlock ? COPY.taskVerifyClickWait : COPY.taskVerifyClick;
+      }
+      case 'referral':
+        return COPY.taskVerifyReferral;
+      default:
+        return row.kind === 'gameplay' ? COPY.taskVerifyAuto : COPY.taskVerifyFlag;
+    }
   }
 
   private onTapTasks(px: number, py: number): void {
@@ -826,17 +957,35 @@ export class Game {
       if (this.hitRect(t, px, py)) {
         this.audio.coin();
         this.tasksTab = t.id;
+        this.tasksPage = 0;
         return;
       }
     }
-    const rows = this.taskRows();
-    for (let i = 0; i < rows.length; i++) {
-      if (!this.hitRect(this.taskClaimRect(i), px, py)) continue;
-      const row = rows[i]!;
-      const action = this.taskAction(row);
-      if (action === 'go' && row.url) {
+    const pager = this.taskPagerRects();
+    if (pager) {
+      const L = this.tasksLayout();
+      if (this.hitRect(pager.prev, px, py) && this.tasksPage > 0) {
         this.audio.coin();
-        visitTask(row.id);
+        this.tasksPage--;
+        return;
+      }
+      if (this.hitRect(pager.next, px, py) && this.tasksPage < L.pages - 1) {
+        this.audio.coin();
+        this.tasksPage++;
+        return;
+      }
+    }
+    for (const { row, rect } of this.visibleTaskRows()) {
+      if (!this.hitRect(this.taskActionRect(rect), px, py)) continue;
+      const action = this.taskAction(row);
+      if ((action === 'go' || action === 'join') && row.url) {
+        this.audio.coin();
+        // Record the visit server-side (starts the 30s unlock for click-claims),
+        // then open the link. The local echo flips the button immediately.
+        void visitTask(row.id).then((unlockAt) => {
+          this.taskUnlocks.set(row.id, unlockAt ?? Date.now());
+        });
+        this.taskUnlocks.set(row.id, Date.now() + (row.verifyMethod === 'click_claim' ? 30_000 : 0));
         this.adapter.openLink(row.url);
       } else if (action === 'claim') {
         this.onClaimTask(row);
@@ -882,12 +1031,18 @@ export class Game {
 
   // ---- first-run tutorial (PRD-ONBOARDING-TASKS §5) -----------------------
 
-  private startTutorial(): void {
+  private startTutorial(stage: 1 | 2 | 3 = 1): void {
     this.tutorialActive = true;
-    this.tutorialStep = 1;
     this.tutorialSkipConfirm = false;
     this.tutorialGuided = false;
-    this.screen = 'title';
+    this.tutorialMicro = false;
+    if (stage === 3) this.enterTourStep(7);
+    else {
+      // Stage 2 can't resume mid-round — restart the guided round from its intro.
+      this.tutorialStep = 1;
+      this.screen = 'title';
+    }
+    this.saveTutorialStage(stage === 3 ? 3 : 1);
   }
 
   /** Which steps dim the screen (card-only). Steps 2 & 5 stay clear for gameplay. */
@@ -900,9 +1055,27 @@ export class Game {
     return this.tutorialActive && this.tutorialStep !== 2 && this.tutorialStep !== 5;
   }
 
+  /** Tour steps happen OVER THE REAL SCREENS (§5.2 stage 3): level select for the
+   *  levels step, title for tokens/streak, leaderboard for the podium finale. */
+  private enterTourStep(step: 7 | 8 | 9 | 10): void {
+    this.tutorialStep = step;
+    this.saveTutorialStage(3);
+    if (step === 7) {
+      // 'practice' so the level cards show their +10/+20/+30 RP badges, matching
+      // the step copy (the card overlay swallows taps, so nothing can start).
+      this.pendingMode = 'practice';
+      this.screen = 'levelSelect';
+    } else if (step === 8 || step === 9) {
+      this.screen = 'title';
+    } else {
+      if (this.screen !== 'leaderboard') this.enterLeaderboard();
+    }
+  }
+
   private tutorialAdvance(): void {
     const s = this.tutorialStep;
     if (s === 1) {
+      this.saveTutorialStage(2);
       this.beginGuidedRound();
       return;
     }
@@ -917,15 +1090,14 @@ export class Game {
       return;
     }
     if (s === 6) {
-      // Guided round done → the environment tour, back on the title.
+      // Guided round done → the environment tour over the real screens.
       this.tutorialGuided = false;
       this.match = null;
-      this.screen = 'title';
-      this.tutorialStep = 7;
+      this.enterTourStep(7);
       return;
     }
     if (s >= 7 && s < 10) {
-      this.tutorialStep = s + 1;
+      this.enterTourStep((s + 1) as 8 | 9 | 10);
       return;
     }
     if (s === 10) {
@@ -934,14 +1106,16 @@ export class Game {
   }
 
   private tutorialBack(): void {
-    if (this.tutorialStep >= 8 && this.tutorialStep <= 10) this.tutorialStep -= 1;
-    else if (this.tutorialStep === 4) this.tutorialStep = 3;
+    const s = this.tutorialStep;
+    if (s >= 8 && s <= 10) this.enterTourStep((s - 1) as 7 | 8 | 9);
+    else if (s === 4) this.tutorialStep = 3;
   }
 
   private finishTutorial(): void {
     this.tutorialActive = false;
     this.tutorialGuided = false;
     this.tutorialStep = 0;
+    this.saveTutorialStage(null);
     setTutorialServer(true, false);
     if (this.onboarding) this.onboarding.tutorialDone = true;
     this.refreshTasks(); // the "Complete the tutorial" task is now claimable
@@ -955,6 +1129,7 @@ export class Game {
     this.tutorialSkipConfirm = false;
     this.tutorialStep = 0;
     this.match = null;
+    this.saveTutorialStage(null);
     setTutorialServer(false, true);
     if (this.onboarding) this.onboarding.tutorialSkipped = true;
     this.screen = 'title';
@@ -1012,27 +1187,40 @@ export class Game {
     }
   }
 
+  /** Coach-card geometry: height fits the wrapped copy; the card sits in the half
+   *  of the screen OPPOSITE the spotlight, so it never covers what it describes. */
   private tutorialCardRect(): { x: number; y: number; w: number; h: number } {
-    const { w, h } = this.vp;
-    return { x: w * 0.06, y: h * 0.64, w: w * 0.88, h: h * 0.3 };
+    const { ctx, w, h } = this.vp;
+    const cw = Math.min(w * 0.88, 400);
+    ctx.font = `${fonts.weight.semibold} 15px ${fonts.family}`;
+    const lines = wrapText(ctx, COPY.tut[this.tutorialStep - 1] ?? '', cw - 44).length;
+    const ch = 46 + lines * 22 + 62; // header pad + copy + button row
+    const spot = this.spotlightRect();
+    const spotCenter = spot ? spot.y + spot.h / 2 : h;
+    const topY = Math.max(h * 0.07, 54);
+    const bottomY = h * 0.94 - ch;
+    // Spotlight in the bottom half → card at the top, and vice versa.
+    const y = spotCenter > h * 0.52 ? topY : bottomY;
+    return { x: w / 2 - cw / 2, y, w: cw, h: ch };
   }
 
   private tutorialSkipChipRect(): { x: number; y: number; w: number; h: number } {
     const { w } = this.vp;
-    return { x: w / 2 - 55, y: 8, w: 110, h: 24 };
+    return { x: w - 88, y: 44, w: 76, h: 24 };
   }
 
   private tutorialCardButtons(): Button[] {
     const c = this.tutorialCardRect();
-    const rowY = c.y + c.h - 58;
+    const rowY = c.y + c.h - 54;
     const out: Button[] = [];
-    out.push({ id: 'skip', x: c.x + c.w - 66, y: c.y + 10, w: 56, h: 24, label: COPY.tutSkip.split(' ')[0]!, kind: 'ghost' });
-    if (this.tutorialStep === 4 || (this.tutorialStep >= 8 && this.tutorialStep <= 10)) {
-      out.push({ id: 'back', x: c.x + 16, y: rowY, w: 96, h: 46, label: COPY.tutBack, kind: 'ghost' });
+    out.push({ id: 'skip', x: c.x + c.w - 62, y: c.y + 8, w: 52, h: 22, label: COPY.tutSkip.split(' ')[0]!, kind: 'ghost' });
+    const hasBack = this.tutorialStep === 4 || (this.tutorialStep >= 8 && this.tutorialStep <= 10);
+    if (hasBack) {
+      out.push({ id: 'back', x: c.x + 14, y: rowY, w: 86, h: 42, label: COPY.tutBack, kind: 'ghost' });
     }
     const label = this.tutorialStep === 1 ? COPY.tutStart : this.tutorialStep === 10 ? COPY.tutGotIt : COPY.tutNext;
-    const pw = Math.min(180, c.w * 0.5);
-    out.push({ id: 'next', x: c.x + c.w - 16 - pw, y: rowY, w: pw, h: 46, label, kind: 'primary' });
+    const pw = Math.min(hasBack ? c.w - 128 : 200, c.w * 0.62);
+    out.push({ id: 'next', x: c.x + c.w - 14 - pw, y: rowY, w: pw, h: 42, label, kind: 'primary' });
     return out;
   }
 
@@ -1084,7 +1272,9 @@ export class Game {
     return false;
   }
 
-  /** The element to spotlight for the environment-tour steps (7–10), else null. */
+  /** The element the current step spotlights (cut out of the dim), else null.
+   *  Guided round: the timer (3) and the BUY/SELL buttons (4). Tour: the real
+   *  level cards (7), the token chip (8), streak+season chips (9), the board (10). */
   private spotlightRect(): { x: number; y: number; w: number; h: number } | null {
     const union = (rects: Array<{ x: number; y: number; w: number; h: number }>): { x: number; y: number; w: number; h: number } | null => {
       if (rects.length === 0) return null;
@@ -1094,17 +1284,28 @@ export class Game {
       const y1 = Math.max(...rects.map((r) => r.y + r.h));
       return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     };
-    const btns = this.title.buttons(this.vp, !!this.profile);
     const chips = this.chipRects();
     switch (this.tutorialStep) {
+      case 3:
+        return this.roundView.timerRect(this.vp);
+      case 4:
+        return union([this.roundView.buyRect(this.vp), this.roundView.sellRect(this.vp)]);
       case 7:
-        return union(btns.filter((b) => b.id === 'challenge' || b.id === 'practice' || b.id === 'free'));
-      case 8:
-        return union(chips.filter((c) => c.id === 'tokens'));
-      case 9:
-        return union(chips.filter((c) => c.id === 'streak' || c.id === 'season'));
-      case 10:
-        return union(btns.filter((b) => b.id === 'leaderboard'));
+        return union(LEVELS.map((lv) => this.levelCardRect(lv)));
+      case 8: {
+        const t = union(chips.filter((c) => c.id === 'tokens'));
+        // No live profile (dev) → still show the step; highlight where the chip lives.
+        return t ?? { x: 12, y: 12, w: 70, h: 26 };
+      }
+      case 9: {
+        const t = union(chips.filter((c) => c.id === 'streak' || c.id === 'season'));
+        return t ?? { x: 12, y: 12, w: 148, h: 26 };
+      }
+      case 10: {
+        const { w, h } = this.vp;
+        // The podium + prizes chip region at the top of the leaderboard.
+        return union([this.prizesChipRect(), { x: w * 0.08, y: h * 0.11, w: w * 0.84, h: h * 0.3 }]);
+      }
       default:
         return null;
     }
@@ -1118,48 +1319,64 @@ export class Game {
       const spot = this.spotlightRect();
       ctx.fillStyle = 'rgba(9,13,26,0.78)';
       if (spot) {
-        // Dim everything except a padded hole around the spotlighted element.
-        const pad = 8;
+        // Dim everything except a padded hole around the spotlighted element — the
+        // thing being explained must ALWAYS stay fully visible.
+        const pad = 10;
         const sx = spot.x - pad;
         const sy = spot.y - pad;
         const sw = spot.w + pad * 2;
         const sh = spot.h + pad * 2;
-        ctx.fillRect(0, 0, w, sy);
-        ctx.fillRect(0, sy + sh, w, h - (sy + sh));
-        ctx.fillRect(0, sy, sx, sh);
-        ctx.fillRect(sx + sw, sy, w - (sx + sw), sh);
-        roundRectPath(ctx, sx, sy, sw, sh, 12);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = colors.rebateGold;
+        ctx.fillRect(0, 0, w, Math.max(0, sy));
+        ctx.fillRect(0, sy + sh, w, Math.max(0, h - (sy + sh)));
+        ctx.fillRect(0, sy, Math.max(0, sx), sh);
+        ctx.fillRect(sx + sw, sy, Math.max(0, w - (sx + sw)), sh);
+        // Pulsing gold ring so the eye lands on the cut-out.
+        const glow = 0.55 + 0.35 * Math.sin(this.pulse * 3.2);
+        roundRectPath(ctx, sx, sy, sw, sh, 14);
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = `rgba(245,196,81,${glow.toFixed(2)})`;
         ctx.stroke();
       } else {
         ctx.fillRect(0, 0, w, h);
       }
     }
 
-    // Passive gameplay steps: a compact top banner + a skip chip.
+    // Passive gameplay steps (2 & 5): no dim, a backdropped banner over the chart
+    // top + a small Skip chip below the mute toggle. Taps pass through to the round.
     if (!this.tutorialHasCard()) {
+      const bw = Math.min(w * 0.88, 380);
+      ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
+      const lines = wrapText(ctx, COPY.tut[this.tutorialStep - 1] ?? '', bw - 28);
+      const bh = 16 + lines.length * 17;
+      const by = h * 0.14;
+      roundRectPath(ctx, cx - bw / 2, by, bw, bh, 12);
+      ctx.fillStyle = 'rgba(9,13,26,0.82)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(245,196,81,0.4)';
+      ctx.stroke();
+      ctx.fillStyle = colors.rebateGold;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      lines.forEach((ln, i) => ctx.fillText(ln, cx, by + 20 + i * 17));
+
       const r = this.tutorialSkipChipRect();
       roundRectPath(ctx, r.x, r.y, r.w, r.h, r.h / 2);
-      ctx.fillStyle = 'rgba(9,13,26,0.7)';
+      ctx.fillStyle = 'rgba(9,13,26,0.75)';
       ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = colors.border;
+      ctx.stroke();
       ctx.fillStyle = colors.textMuted;
       ctx.font = `${fonts.weight.semibold} 11px ${fonts.family}`;
-      ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(COPY.tutSkip, r.x + r.w / 2, r.y + r.h / 2 + 0.5);
+      ctx.fillText(COPY.tutConfirmSkip, r.x + r.w / 2, r.y + r.h / 2 + 0.5);
       ctx.textBaseline = 'alphabetic';
-      // The step copy as a banner just below the round header.
-      ctx.fillStyle = colors.rebateGold;
-      ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
-      wrapText(ctx, COPY.tut[this.tutorialStep - 1] ?? '', Math.min(w * 0.86, 360)).forEach((ln, i) =>
-        ctx.fillText(ln, cx, h * 0.1 + i * 18),
-      );
       ctx.textAlign = 'left';
       return;
     }
 
-    // Skip-confirm dialog.
+    // Skip-confirm dialog (on its own dim).
     if (this.tutorialSkipConfirm) {
       ctx.textAlign = 'center';
       ctx.fillStyle = colors.text;
@@ -1174,7 +1391,7 @@ export class Game {
       return;
     }
 
-    // The coach card.
+    // The coach card (auto-sized, placed opposite the spotlight).
     const c = this.tutorialCardRect();
     roundRectPath(ctx, c.x, c.y, c.w, c.h, 16);
     ctx.fillStyle = 'rgba(23,31,58,0.97)';
@@ -1183,14 +1400,14 @@ export class Game {
     ctx.strokeStyle = colors.border;
     ctx.stroke();
 
-    // Progress dots (1–10) above the card.
+    // Progress dots (1–10) inside the card's top edge.
     const dots = 10;
-    const dotGap = 16;
-    const dx0 = cx - ((dots - 1) * dotGap) / 2;
+    const dotGap = Math.min(16, (c.w - 100) / (dots - 1));
+    const dx0 = c.x + 16;
     for (let i = 0; i < dots; i++) {
       ctx.beginPath();
-      ctx.arc(dx0 + i * dotGap, c.y - 14, 3.2, 0, Math.PI * 2);
-      ctx.fillStyle = i + 1 === this.tutorialStep ? colors.rebateGold : 'rgba(138,148,166,0.4)';
+      ctx.arc(dx0 + i * dotGap, c.y + 19, 3, 0, Math.PI * 2);
+      ctx.fillStyle = i + 1 <= this.tutorialStep ? colors.rebateGold : 'rgba(138,148,166,0.35)';
       ctx.fill();
     }
 
@@ -1199,11 +1416,65 @@ export class Game {
     ctx.fillStyle = colors.text;
     ctx.font = `${fonts.weight.semibold} 15px ${fonts.family}`;
     wrapText(ctx, COPY.tut[this.tutorialStep - 1] ?? '', c.w - 44).forEach((ln, i) =>
-      ctx.fillText(ln, cx, c.y + 40 + i * 22),
+      ctx.fillText(ln, cx, c.y + 52 + i * 22),
     );
 
     for (const b of this.tutorialCardButtons()) drawButton(ctx, b);
     ctx.textAlign = 'left';
+  }
+
+  // ---- challenge-arrival micro-intro (§5.4) --------------------------------
+
+  private microIntroRects(): { card: { x: number; y: number; w: number; h: number }; start: Button } {
+    const { w, h } = this.vp;
+    const cw = Math.min(w * 0.88, 380);
+    const ch = 150;
+    const y = h * 0.3;
+    return {
+      card: { x: w / 2 - cw / 2, y, w: cw, h: ch },
+      start: { id: 'start', x: w / 2 - cw / 2 + 16, y: y + ch - 56, w: cw - 32, h: 44, label: COPY.tutStart, kind: 'primary' },
+    };
+  }
+
+  private renderMicroIntro(): void {
+    const { ctx, w, h } = this.vp;
+    ctx.fillStyle = 'rgba(9,13,26,0.7)';
+    ctx.fillRect(0, 0, w, h);
+    const { card, start } = this.microIntroRects();
+    roundRectPath(ctx, card.x, card.y, card.w, card.h, 16);
+    ctx.fillStyle = 'rgba(23,31,58,0.97)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = colors.border;
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+    const opp = this.opponent;
+    if (opp) ctx.fillText(COPY.incomingChallenge(opp.name, opp.score, CONFIG.ROUNDS), w / 2, card.y + 34);
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.semibold} 14px ${fonts.family}`;
+    ctx.fillText(COPY.tagline, w / 2, card.y + 62);
+    drawButton(ctx, start);
+    ctx.textAlign = 'left';
+  }
+
+  private onTapMicroIntro(px: number, py: number): boolean {
+    if (!this.tutorialMicro) return false;
+    const { start } = this.microIntroRects();
+    if (hitButton([start], px, py) === 'start') {
+      this.audio.coin();
+      this.tutorialMicro = false;
+      // Straight into the friend's duel (the hook); the full tutorial stays
+      // available from "How to play" — flagged with an attention dot.
+      if (this.profile) this.startRanked('duel', this.level);
+      else this.startMatch('challenge', this.level);
+      return true;
+    }
+    // Any other tap dismisses the card but keeps the challenge banner.
+    this.tutorialMicro = false;
+    return true;
   }
 
   private hitRect(r: { x: number; y: number; w: number; h: number }, px: number, py: number): boolean {
@@ -1276,29 +1547,67 @@ export class Game {
     });
   }
 
-  private emailInputRect(): { x: number; y: number; w: number; h: number } {
-    const { w, h } = this.vp;
+  /** Flowed email-screen layout — positions cascade from the title down so the
+   *  screen works at any height (no fixed-percent collisions). */
+  private emailLayout(): {
+    titleY: number;
+    introY: number;
+    introLines: string[];
+    linkedY: number;
+    input: { x: number; y: number; w: number; h: number };
+    msgY: number;
+    buttons: Button[];
+    createY: number;
+    privacyY: number;
+  } {
+    const { ctx, w, h } = this.vp;
+    const compact = h < 660;
     const iw = Math.min(w * 0.84, 360);
-    return { x: w / 2 - iw / 2, y: h * 0.44, w: iw, h: 50 };
+    const ix = w / 2 - iw / 2;
+    ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+    const introLines = wrapText(ctx, COPY.emailIntro, Math.min(w * 0.84, 350));
+
+    let y = Math.max(56, h * (compact ? 0.09 : 0.12));
+    const titleY = y;
+    y += compact ? 24 : 30;
+    const introY = y;
+    y += introLines.length * (compact ? 16 : 18) + (compact ? 10 : 16);
+    const linkedY = this.account?.masked ? y + 12 : 0;
+    if (this.account?.masked) y += compact ? 34 : 40;
+    const input = { x: ix, y, w: iw, h: compact ? 44 : 50 };
+    y += input.h + 8;
+    const msgY = y + 12;
+    y += compact ? 24 : 30;
+    const buttons: Button[] = [
+      { id: 'save', x: ix, y, w: iw, h: compact ? 44 : 50, label: this.account?.masked ? COPY.emailUpdate : COPY.emailSave, kind: 'gold' },
+    ];
+    y += (compact ? 44 : 50) + 8;
+    if (this.account?.masked) {
+      buttons.push({ id: 'remove', x: ix, y, w: iw, h: compact ? 36 : 42, label: COPY.emailRemove, kind: 'ghost' });
+      y += (compact ? 36 : 42) + 8;
+    }
+    const createY = y + 12;
+    y += compact ? 26 : 32;
+    const privacyY = y + 10;
+    return { titleY, introY, introLines, linkedY, input, msgY, buttons, createY, privacyY };
+  }
+
+  private emailInputRect(): { x: number; y: number; w: number; h: number } {
+    return this.emailLayout().input;
   }
 
   private emailButtons(): Button[] {
-    const { w, h } = this.vp;
-    const bw = Math.min(w * 0.84, 360);
-    const bx = w / 2 - bw / 2;
-    const bh = 50;
-    const out: Button[] = [];
-    out.push({ id: 'save', x: bx, y: h * 0.58, w: bw, h: bh, label: this.account?.masked ? COPY.emailUpdate : COPY.emailSave, kind: 'gold' });
-    if (this.account?.masked) {
-      out.push({ id: 'remove', x: bx, y: h * 0.58 + bh + 10, w: bw, h: 44, label: COPY.emailRemove, kind: 'ghost' });
-    }
-    return out;
+    return this.emailLayout().buttons;
+  }
+
+  /** The title's flowed layout with the flags this Game instance actually has —
+   *  the single source both the renderer and the tap hit-tests use. */
+  private titleLayout(): ReturnType<Title['layout']> {
+    return this.title.layout(this.vp, { includeFree: !!this.profile, hasAccount: !!this.account });
   }
 
   private accountChipRect(): { x: number; y: number; w: number; h: number } {
-    const { w, h } = this.vp;
-    const cw = Math.min(w * 0.6, 220);
-    return { x: w / 2 - cw / 2, y: h * 0.8, w: cw, h: 30 };
+    return this.titleLayout().account;
   }
 
   /** Season chips row (top-left, mirrors the mute chip): tokens · streak · countdown. */
@@ -1361,13 +1670,13 @@ export class Game {
       return;
     }
     // The small brand-CTA chip (the campaign funnel, kept light).
-    const cr = this.title.ctaRect(this.vp);
-    if (px >= cr.x && px <= cr.x + cr.w && py >= cr.y && py <= cr.y + cr.h) {
+    const L = this.titleLayout();
+    if (this.hitRect(L.cta, px, py)) {
       this.audio.coin();
       this.adapter.openLink(WEBSITE_URL);
       return;
     }
-    const id = hitButton(this.title.buttons(this.vp, !!this.profile), px, py);
+    const id = hitButton(L.buttons, px, py);
     if (!id) return;
     this.audio.coin();
     if (id === 'leaderboard') {
@@ -1652,7 +1961,11 @@ export class Game {
         : null;
       const locked =
         this.profile && this.profile.tokens <= 0 ? new Set(['challenge', 'practice']) : undefined;
-      this.title.render(ctx, this.vp, this.pulse, banner, { includeFree: !!this.profile, locked });
+      this.title.render(ctx, this.vp, this.pulse, banner, {
+        includeFree: !!this.profile,
+        locked,
+        hasAccount: !!this.account,
+      });
       if (this.account) this.renderAccountChip();
       if (this.tasks) this.renderTasksChip();
       this.renderHowToChip();
@@ -1691,6 +2004,7 @@ export class Game {
     this.particles.render(ctx);
     this.renderMute();
     if (this.tutorialActive) this.renderTutorial();
+    else if (this.tutorialMicro && this.screen === 'title') this.renderMicroIntro();
   }
 
   /** Top-left season chips: ⚡tokens · 🔥streak · ⏳countdown (PRD §7 title HUD). */
@@ -2373,53 +2687,54 @@ export class Game {
     return s.length > max ? `${s.slice(0, max - 1)}…` : s;
   }
 
-  /** Prizes sheet (PRD §5.D): 100/90/80% shares, eligibility floor, terms. */
+  /** Prizes sheet (PRD §5.D): 100/90/80% shares, eligibility floor, terms.
+   *  Fully flowed (prizesLayout) so nothing overlaps on short screens. */
   private renderPrizes(): void {
     const { ctx, w, h } = this.vp;
     const cx = w / 2;
+    const L = this.prizesLayout();
+    const compact = h < 660;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.text;
-    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.07, 26)}px ${fonts.family}`;
-    ctx.fillText(COPY.prizesTitle, cx, h * 0.12);
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.07, compact ? 22 : 26)}px ${fonts.family}`;
+    ctx.fillText(COPY.prizesTitle, cx, L.titleY);
 
-    let y = h * 0.22;
+    let y = L.cardsY;
     const cardW = Math.min(w * 0.84, 360);
     const cardX = cx - cardW / 2;
     COPY.prizeLines.forEach((line, i) => {
-      const ch = 44;
-      roundRectPath(ctx, cardX, y, cardW, ch, 12);
+      roundRectPath(ctx, cardX, y, cardW, L.cardH, 12);
       ctx.fillStyle = `${Game.MEDALS[i]!}1e`;
       ctx.fill();
       ctx.lineWidth = 1;
       ctx.strokeStyle = `${Game.MEDALS[i]!}66`;
       ctx.stroke();
       ctx.fillStyle = colors.text;
-      ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
+      ctx.font = `${fonts.weight.bold} ${compact ? 12 : 14}px ${fonts.family}`;
       ctx.textAlign = 'center';
-      ctx.fillText(line, cx, y + ch / 2 + 5);
-      y += ch + 10;
+      ctx.fillText(this.fitText(line, cardW - 24, compact ? 12 : 14), cx, y + L.cardH / 2 + 4);
+      y += L.cardH + L.gap;
     });
 
-    y += 6;
+    y = L.termsY;
     ctx.fillStyle = colors.textMuted;
-    ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
-    const lines = [COPY.prizeDefinition, COPY.prizeFloor, COPY.prizeClaim, COPY.prizeTokensNote];
-    for (const para of lines) {
+    ctx.font = `${fonts.weight.medium} ${compact ? 11 : 12}px ${fonts.family}`;
+    const lineH = compact ? 13 : 15;
+    for (const para of [COPY.prizeDefinition, COPY.prizeFloor, COPY.prizeClaim, COPY.prizeTokensNote]) {
       const wrapped = wrapText(ctx, para, Math.min(w * 0.84, 350));
       wrapped.forEach((ln) => {
         ctx.fillText(ln, cx, y);
-        y += 15;
+        y += lineH;
       });
-      y += 6;
+      y += compact ? 4 : 6;
     }
 
     // The funnel: link your RebateGain account (only when launched from the bot).
     if (this.account) {
-      const cta = this.prizeLinkCtaRect();
       drawButton(ctx, {
         id: 'link',
-        ...cta,
+        ...L.cta,
         label: this.account.masked ? COPY.accountLinked : COPY.prizeLinkCta,
         kind: this.account.masked ? 'ghost' : 'primary',
       });
@@ -2468,7 +2783,7 @@ export class Game {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.text;
     ctx.font = `${fonts.weight.black} ${Math.min(w * 0.07, 26)}px ${fonts.family}`;
-    ctx.fillText(COPY.tasks, cx, h * 0.12);
+    ctx.fillText(COPY.tasks, cx, h * 0.1);
 
     // Tabs.
     for (const t of this.tasksTabRects()) {
@@ -2487,12 +2802,14 @@ export class Game {
     }
     ctx.textBaseline = 'alphabetic';
 
-    // Reset countdown on the Daily tab.
+    const L = this.tasksLayout();
+
+    // Reset countdown on the Daily tab (sits between the tabs and the list).
     if (this.tasksTab === 'daily' && this.tasks) {
       ctx.fillStyle = colors.textMuted;
       ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
       ctx.textAlign = 'center';
-      ctx.fillText(COPY.tasksResetIn(fmtDuration(this.tasks.resetAt - Date.now())), cx, h * 0.235);
+      ctx.fillText(COPY.tasksResetIn(fmtDuration(this.tasks.resetAt - Date.now())), cx, L.listTop - 10);
     }
 
     const rows = this.taskRows();
@@ -2500,83 +2817,135 @@ export class Game {
       ctx.fillStyle = colors.textMuted;
       ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
       ctx.textAlign = 'center';
-      ctx.fillText(this.tasks ? COPY.tasksDailyDone : 'Loading…', cx, h * 0.32);
+      ctx.fillText(this.tasks ? COPY.tasksDailyDone : 'Loading…', cx, L.listTop + 30);
     }
-    rows.forEach((row, i) => this.drawTaskRow(row, i));
+    for (const { row, rect } of this.visibleTaskRows()) this.drawTaskRow(row, rect);
 
-    // Claim toast.
+    // Pager (only when the list overflows).
+    const pager = this.taskPagerRects();
+    if (pager) {
+      const page = Math.min(this.tasksPage, L.pages - 1);
+      drawButton(ctx, { id: 'prev', ...pager.prev, label: '‹', kind: 'ghost' });
+      drawButton(ctx, { id: 'next', ...pager.next, label: '›', kind: 'ghost' });
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`${page + 1}/${L.pages}`, cx, pager.prev.y + pager.prev.h / 2 + 0.5);
+      ctx.textBaseline = 'alphabetic';
+    }
+
+    // Claim toast, floated above the Back button.
     if (this.tasksToast && this.pulse < this.tasksToast.until) {
       ctx.fillStyle = colors.up;
       ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
       ctx.textAlign = 'center';
-      ctx.fillText(this.tasksToast.text, cx, h * 0.82);
+      ctx.fillText(this.tasksToast.text, cx, h * 0.845);
     }
 
     for (const bt of this.backButtons()) drawButton(ctx, bt);
     ctx.textAlign = 'left';
   }
 
-  private drawTaskRow(row: TaskRow, i: number): void {
+  /** One task row: title + reward on top, the VERIFY HINT + progress below, and a
+   *  state-aware action (Go/Join → countdown → Claim → Claimed ✓). */
+  private drawTaskRow(row: TaskRow, r: { x: number; y: number; w: number; h: number }): void {
     const { ctx } = this.vp;
-    const r = this.taskRowRect(i);
+    const action = this.taskAction(row);
     roundRectPath(ctx, r.x, r.y, r.w, r.h, 12);
-    ctx.fillStyle = 'rgba(23,31,58,0.7)';
+    ctx.fillStyle = row.state === 'claimed' ? 'rgba(23,31,58,0.45)' : 'rgba(23,31,58,0.7)';
     ctx.fill();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = row.state === 'completed' ? 'rgba(245,196,81,0.5)' : colors.border;
+    ctx.strokeStyle = row.state === 'completed' ? 'rgba(245,196,81,0.55)' : colors.border;
     ctx.stroke();
 
-    // Title + reward.
+    const textW = r.w - 116; // right column reserved for reward + button
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = row.state === 'claimed' ? colors.textMuted : colors.text;
     ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
-    ctx.fillText(this.ellipsize(row.title, 34), r.x + 14, r.y + 22);
-    ctx.fillStyle = colors.rebateGold;
-    ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
-    ctx.fillText(COPY.tasksReward(row.rewardType, row.rewardAmount), r.x + 14, r.y + 42);
+    ctx.fillText(this.fitText(row.title, textW, 13), r.x + 14, r.y + 20);
 
-    // Progress bar for multi-step gameplay tasks.
+    // Verify hint — the "how do I know it counted?" line (always visible).
+    ctx.fillStyle = 'rgba(138,148,166,0.9)';
+    ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
+    ctx.fillText(this.fitText(this.taskVerifyHint(row), textW, 10), r.x + 14, r.y + r.h - 22);
+
+    // Progress bar for multi-step tasks (thin, above the hint).
     if (row.target > 1 && row.state !== 'claimed') {
-      const bx = r.x + 90;
-      const bw = r.w - 90 - 100;
+      const bw = textW - 40;
       const frac = Math.max(0, Math.min(1, row.progress / row.target));
-      roundRectPath(ctx, bx, r.y + 35, bw, 6, 3);
-      ctx.fillStyle = 'rgba(40,49,84,0.8)';
+      roundRectPath(ctx, r.x + 14, r.y + r.h - 12, bw, 5, 2.5);
+      ctx.fillStyle = 'rgba(40,49,84,0.9)';
       ctx.fill();
       if (frac > 0) {
-        roundRectPath(ctx, bx, r.y + 35, bw * frac, 6, 3);
+        roundRectPath(ctx, r.x + 14, r.y + r.h - 12, bw * frac, 5, 2.5);
         ctx.fillStyle = colors.up;
         ctx.fill();
       }
       ctx.fillStyle = colors.textMuted;
-      ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
-      ctx.textAlign = 'right';
-      ctx.fillText(COPY.tasksProgress(row.progress, row.target), r.x + r.w - 100, r.y + 40);
+      ctx.font = `${fonts.weight.semibold} 10px ${fonts.family}`;
+      ctx.fillText(COPY.tasksProgress(row.progress, row.target), r.x + 14 + bw + 6, r.y + r.h - 7);
     }
 
-    // Action button.
-    const action = this.taskAction(row);
-    const br = this.taskClaimRect(i);
+    // Right column: reward on top, action below.
+    ctx.textAlign = 'right';
+    ctx.fillStyle = row.state === 'claimed' ? 'rgba(245,196,81,0.5)' : colors.rebateGold;
+    ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
+    ctx.fillText(COPY.tasksReward(row.rewardType, row.rewardAmount), r.x + r.w - 12, r.y + 20);
+
+    const br = this.taskActionRect(r);
     if (action === 'claimed') {
-      ctx.textAlign = 'center';
       ctx.fillStyle = colors.up;
       ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
       ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
       ctx.fillText(COPY.tasksClaimed, br.x + br.w / 2, br.y + br.h / 2);
       ctx.textBaseline = 'alphabetic';
-    } else if (action === 'claim' || action === 'go') {
+    } else if (action === 'wait') {
+      // Click-claim countdown: a disabled-looking pill with live seconds left.
+      const unlock = this.taskUnlockAt(row) ?? Date.now();
+      const secs = Math.max(0, Math.ceil((unlock - Date.now()) / 1000));
+      roundRectPath(ctx, br.x, br.y, br.w, br.h, 10);
+      ctx.fillStyle = 'rgba(40,49,84,0.5)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = colors.border;
+      ctx.stroke();
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.bold} 12px ${fonts.family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`⏳ ${COPY.tasksUnlockIn(secs)}`, br.x + br.w / 2, br.y + br.h / 2 + 0.5);
+      ctx.textBaseline = 'alphabetic';
+    } else if (action === 'claim' || action === 'go' || action === 'join') {
       drawButton(ctx, {
         id: action,
         ...br,
-        label: action === 'claim' ? COPY.tasksClaim : COPY.tasksGo,
+        label: action === 'claim' ? COPY.tasksClaim : action === 'join' ? COPY.tasksJoin : COPY.tasksGo,
         kind: action === 'claim' ? 'gold' : 'ghost',
       });
     }
     ctx.textAlign = 'left';
   }
 
-  /** Title-screen "How to play" chip — replays the tutorial. */
+  /** Ellipsize by measured width (not character count) so it fits any viewport. */
+  private fitText(s: string, maxW: number, px: number): string {
+    const { ctx } = this.vp;
+    ctx.font = `${fonts.weight.medium} ${px}px ${fonts.family}`;
+    if (ctx.measureText(s).width <= maxW) return s;
+    let lo = 0;
+    let hi = s.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (ctx.measureText(`${s.slice(0, mid)}…`).width <= maxW) lo = mid;
+      else hi = mid - 1;
+    }
+    return `${s.slice(0, lo)}…`;
+  }
+
+  /** Title-screen "How to play" chip — replays the tutorial. Gets a gold attention
+   *  dot when the tutorial was skipped or bypassed via a challenge link (§5.4). */
   private renderHowToChip(): void {
     const { ctx } = this.vp;
     const r = this.howToChipRect();
@@ -2591,6 +2960,16 @@ export class Game {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`? ${COPY.howToPlay}`, r.x + r.w / 2, r.y + r.h / 2 + 0.5);
+    const needsAttention =
+      (this.onboarding?.tutorialSkipped || this.tutorialMicro || this.opponent) &&
+      !(this.onboarding?.tutorialDone ?? localTutorialDone());
+    if (needsAttention) {
+      const a = 0.6 + 0.4 * Math.sin(this.pulse * 3);
+      ctx.beginPath();
+      ctx.arc(r.x + r.w - 4, r.y + 3, 4, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(245,196,81,${a.toFixed(2)})`;
+      ctx.fill();
+    }
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
   }
@@ -2616,35 +2995,35 @@ export class Game {
   }
 
   /** The email-capture screen. A real HTML <input> is overlaid (EmailOverlay);
-   *  everything else is canvas. */
+   *  everything else is canvas, laid out by the flowed emailLayout(). */
   private renderEmail(): void {
     const { ctx, w, h } = this.vp;
     const cx = w / 2;
+    const L = this.emailLayout();
+    const compact = h < 660;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
 
     ctx.fillStyle = colors.text;
-    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.06, 24)}px ${fonts.family}`;
-    ctx.fillText(COPY.emailTitle, cx, h * 0.16);
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.06, compact ? 20 : 24)}px ${fonts.family}`;
+    ctx.fillText(COPY.emailTitle, cx, L.titleY);
 
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
-    wrapText(ctx, COPY.emailIntro, Math.min(w * 0.84, 350)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.24 + i * 18),
-    );
+    L.introLines.forEach((ln, i) => ctx.fillText(ln, cx, L.introY + i * (compact ? 16 : 18)));
 
     // Current linked email, if any.
-    if (this.account?.masked) {
+    if (this.account?.masked && L.linkedY > 0) {
       ctx.fillStyle = colors.up;
       ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
-      ctx.fillText(`✓ ${this.account.masked}`, cx, h * 0.38);
+      ctx.fillText(`✓ ${this.account.masked}`, cx, L.linkedY);
       ctx.fillStyle = colors.textMuted;
-      ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
-      ctx.fillText(COPY.emailChangesLeft(this.account.changesLeft), cx, h * 0.38 + 16);
+      ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
+      ctx.fillText(COPY.emailChangesLeft(this.account.changesLeft), cx, L.linkedY + 14);
     }
 
     // The input frame is drawn to match the overlaid HTML input's rect.
-    const ir = this.emailInputRect();
+    const ir = L.input;
     roundRectPath(ctx, ir.x, ir.y, ir.w, ir.h, 10);
     ctx.strokeStyle = colors.border;
     ctx.lineWidth = 1;
@@ -2652,19 +3031,18 @@ export class Game {
 
     // Validation message / "did you mean" suggestion.
     if (this.emailSuggestion) {
-      const sr = this.emailSuggestionRect();
       ctx.fillStyle = colors.rebateGold;
       ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
-      ctx.fillText(COPY.emailDidYouMean(this.emailSuggestion), cx, sr.y + 14);
+      ctx.fillText(COPY.emailDidYouMean(this.emailSuggestion), cx, L.msgY);
     } else if (this.emailMsg) {
       ctx.fillStyle = this.emailMsg.kind === 'ok' ? colors.up : colors.down;
       ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
       wrapText(ctx, this.emailMsg.text, Math.min(w * 0.84, 350)).forEach((ln, i) =>
-        ctx.fillText(ln, cx, this.emailSuggestionRect().y + 14 + i * 15),
+        ctx.fillText(ln, cx, L.msgY + i * 15),
       );
     }
 
-    for (const b of this.emailButtons()) {
+    for (const b of L.buttons) {
       if (b.id === 'save' && this.emailSaving) {
         drawButton(ctx, { ...b, label: COPY.rpPending });
       } else {
@@ -2673,15 +3051,14 @@ export class Game {
     }
 
     // "Create an account" link + binding privacy line.
-    const crr = this.emailCreateRect();
     ctx.fillStyle = colors.rebateGold;
     ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
-    ctx.fillText(COPY.emailNoAccount, cx, crr.y + 14);
+    ctx.fillText(COPY.emailNoAccount, cx, L.createY);
 
     ctx.fillStyle = 'rgba(138,148,166,0.85)';
-    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+    ctx.font = `${fonts.weight.medium} ${compact ? 10 : 11}px ${fonts.family}`;
     wrapText(ctx, COPY.emailPrivacy, Math.min(w * 0.84, 350)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.76 + i * 14),
+      ctx.fillText(ln, cx, L.privacyY + i * 13),
     );
 
     for (const bt of this.backButtons()) drawButton(ctx, bt);

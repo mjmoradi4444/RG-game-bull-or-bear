@@ -19,6 +19,10 @@ export interface TaskRow {
   target: number;
   state: TaskState;
   progress: number;
+  /** Player already opened this task's link (Join/Go pressed). */
+  visited?: boolean;
+  /** click_claim only: when the Claim button unlocks (server clock). */
+  unlocksAt?: number;
 }
 
 export interface TasksView {
@@ -65,10 +69,16 @@ export async function claimTask(taskId: string, day?: string): Promise<ClaimResu
   }
 }
 
-export function visitTask(taskId: string): void {
+/** Record a link visit; resolves the server's unlock time for the Claim button. */
+export async function visitTask(taskId: string): Promise<number | null> {
   const g = gctx();
-  if (!g) return;
-  void post('/tasks/visit', { gctx: g, taskId }).catch(() => {});
+  if (!g) return null;
+  try {
+    const d = await post<{ ok: boolean; unlockAt?: number | null }>('/tasks/visit', { gctx: g, taskId });
+    return d.ok ? (d.unlockAt ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function shareTask(): void {

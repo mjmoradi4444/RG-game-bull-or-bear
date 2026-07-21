@@ -873,13 +873,20 @@ function creditReferral(inviteeU: number): void {
   save();
 }
 
-// ---- click-claim visit (§7.5) -----------------------------------------------
+// ---- link-visit tracking (§7.5) ---------------------------------------------
 
-export function visitTask(u: number, taskId: string): void {
+const CLICK_CLAIM_DELAY_MS = 30_000;
+
+/** Record that the player opened a task's link. click_claim starts its 30s unlock
+ *  timer; tg_member records the "Join" step so the UI can switch to Claim.
+ *  Returns when the Claim button unlocks (now for tg — membership is the real gate). */
+export function visitTask(u: number, taskId: string): number | null {
   const def = taskDef(taskId);
-  if (!def || def.verifyMethod !== 'click_claim') return;
-  state.taskVisits[`${u}:${taskId}`] = Date.now();
+  if (!def || (def.verifyMethod !== 'click_claim' && def.verifyMethod !== 'tg_member')) return null;
+  const now = Date.now();
+  state.taskVisits[`${u}:${taskId}`] = now;
   save();
+  return def.verifyMethod === 'click_claim' ? now + CLICK_CLAIM_DELAY_MS : now;
 }
 
 // ---- completion state resolution --------------------------------------------
@@ -902,7 +909,7 @@ function resolveState(u: number, def: TaskDef, day?: string): { state: TaskState
   }
   if (def.verifyMethod === 'click_claim') {
     const visited = state.taskVisits[`${u}:${def.id}`];
-    const ready = visited && Date.now() - visited >= 30_000;
+    const ready = visited && Date.now() - visited >= CLICK_CLAIM_DELAY_MS;
     return { state: ready ? 'completed' : 'in_progress', progress: 0 };
   }
   if (def.verifyMethod === 'tg_member') {
@@ -928,6 +935,10 @@ export interface TaskRow {
   target: number;
   state: TaskState;
   progress: number;
+  /** Whether the player already opened this task's link (Join/Go pressed). */
+  visited?: boolean;
+  /** click_claim only: when the Claim button unlocks (visited, timer running). */
+  unlocksAt?: number;
 }
 
 export interface TasksView {
@@ -943,6 +954,11 @@ function toRow(u: number, def: TaskDef, day?: string): TaskRow {
   const url =
     def.url ||
     (def.channel ? `https://t.me/${def.channel.replace(/^@/, '')}` : undefined);
+  const visitedAt = state.taskVisits[`${u}:${def.id}`];
+  const unlocksAt =
+    def.verifyMethod === 'click_claim' && visitedAt && st === 'in_progress'
+      ? visitedAt + CLICK_CLAIM_DELAY_MS
+      : undefined;
   return {
     id: def.id,
     kind: def.kind,
@@ -954,6 +970,8 @@ function toRow(u: number, def: TaskDef, day?: string): TaskRow {
     target: def.target,
     state: st,
     progress,
+    visited: visitedAt !== undefined || undefined,
+    unlocksAt,
   };
 }
 

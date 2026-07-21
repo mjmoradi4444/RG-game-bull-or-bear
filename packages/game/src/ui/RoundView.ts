@@ -133,6 +133,12 @@ export class RoundView {
     return this.callButtonRect(vp, 1);
   }
 
+  /** Bounding box of the decide-phase countdown ring — the tutorial spotlights it. */
+  timerRect(vp: Viewport): Rect {
+    const r = 27 + 8;
+    return { x: vp.w / 2 - r, y: vp.h * 0.64 - r, w: r * 2, h: r * 2 };
+  }
+
   private callButtonRect(vp: Viewport, side: 0 | 1): Rect {
     const x0 = vp.w * 0.06;
     const totalW = vp.w * 0.88;
@@ -185,7 +191,7 @@ export class RoundView {
     if (showFuture) this.drawReveal(ctx, vp, round, combo);
     else if (round.phase === 'decide') this.drawDecide(ctx, vp, round);
     else if (round.phase === 'preroll') this.drawPreroll(ctx, vp, round);
-    else this.drawScanning(ctx, vp); // playback
+    else this.drawScanning(ctx, vp, round); // playback
 
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
@@ -265,14 +271,17 @@ export class RoundView {
     ctx.restore();
   }
 
-  private drawScanning(ctx: CanvasRenderingContext2D, vp: Viewport): void {
+  private drawScanning(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round): void {
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(138,148,166,0.7)';
     ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
     ctx.fillText('Reading the market…', vp.w / 2, vp.h * 0.64);
-    ctx.fillStyle = 'rgba(138,148,166,0.5)';
-    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
-    ctx.fillText(COPY.tapToSkip, vp.w / 2, vp.h * 0.675);
+    // The guided tutorial round disables skipping — don't advertise it there.
+    if (!round.noSkip) {
+      ctx.fillStyle = 'rgba(138,148,166,0.5)';
+      ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+      ctx.fillText(COPY.tapToSkip, vp.w / 2, vp.h * 0.675);
+    }
   }
 
   private drawDecide(ctx: CanvasRenderingContext2D, vp: Viewport, round: Round): void {

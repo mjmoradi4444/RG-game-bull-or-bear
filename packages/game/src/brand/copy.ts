@@ -124,6 +124,15 @@ export const COPY = {
     type === 'token' ? `+${amt} Rush Tokens!` : `+${amt} RP claimed!`,
   tasksNotYet: 'Not done yet — keep playing.',
   tasksJoinFirst: 'Join the channel first, then claim.',
+  tasksJoin: 'Join',
+  tasksUnlockIn: (s: number): string => `${s}s`,
+  // How each task is verified — shown on every row so the rules are never a mystery.
+  taskVerifyAuto: 'Tracked automatically from your matches',
+  taskVerifyFlag: 'Completes automatically',
+  taskVerifyTg: 'Membership is checked when you claim',
+  taskVerifyClick: 'Open the link — Claim unlocks 30s later',
+  taskVerifyClickWait: 'Verifying your visit…',
+  taskVerifyReferral: 'Pays automatically when a friend plays a match',
 
   // Tutorial / FTUE (PRD-ONBOARDING-TASKS §5). Short, translation-ready, no idioms.
   howToPlay: 'How to play',

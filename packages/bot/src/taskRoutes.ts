@@ -103,8 +103,8 @@ export async function handleTasks(
       json(res, 401, { ok: false, error: 'bad_context' }, allowOrigin);
       return true;
     }
-    visitTask(ctx.u, String(data.taskId ?? ''));
-    json(res, 200, { ok: true }, allowOrigin);
+    const unlockAt = visitTask(ctx.u, String(data.taskId ?? ''));
+    json(res, 200, { ok: true, unlockAt }, allowOrigin);
     return true;
   }
 

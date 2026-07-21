@@ -235,7 +235,7 @@ api('/prizes/'+CFG.prevSeason+'/'+rank+'/apply',{method:'POST',body:JSON.stringi
 VIEWS.tasks=function(){main.innerHTML='<h2>Tasks</h2><p class="muted">Edit rewards/URLs/active without redeploy. Rewards are clamped server-side (≤200 RP / ≤2 tokens).</p><div id="tkbody">Loading…</div>';loadTK();};
 function loadTK(){api('/tasks').then(function(d){var b=document.getElementById('tkbody');if(!b)return;
 var rows=d.tasks.map(function(t){
-return '<tr data-id="'+t.id+'"><td>'+esc(t.id)+'</td><td><input data-f="title" value="'+esc(t.title)+'" style="width:200px"></td><td class="muted">'+esc(t.cadence)+'/'+esc(t.kind)+'</td>'+
+return '<tr data-id="'+t.id+'"><td>'+esc(t.id)+'</td><td><input data-f="title" value="'+esc(t.title)+'" style="width:200px"></td><td class="muted">'+esc(t.cadence)+'/'+esc(t.kind)+'<br><span class="pill muted">'+esc(t.verifyMethod)+'</span></td>'+
 '<td><input data-f="rewardAmount" type="number" value="'+t.rewardAmount+'" style="width:70px"> '+esc(t.rewardType)+'</td>'+
 '<td><input data-f="'+(t.channel!==undefined&&t.verifyMethod==="tg_member"?"channel":"url")+'" value="'+esc(t.channel||t.url||"")+'" placeholder="'+(t.verifyMethod==="tg_member"?"@channel":t.verifyMethod==="click_claim"?"https://…":"")+'" style="width:160px"></td>'+
 '<td><input data-f="active" type="checkbox" '+(t.active?"checked":"")+'></td>'+

@@ -24,39 +24,68 @@ export class Title {
     this.lockup.src = '/brand/Logo2.png';
   }
 
-  /** Mode buttons — shared by render and the tap hit-test. When the seasonal
-   *  profile is live (`includeFree`), free Practice joins Leaderboard on a
-   *  half-width row so the ranked/free split stays visible (PRD §5.A). */
-  buttons(vp: Viewport, includeFree = false): Button[] {
-    const bw = Math.min(vp.w * 0.82, 340);
-    const bx = vp.w / 2 - bw / 2;
-    const bh = 54;
-    const gap = 12;
-    let y = vp.h * 0.58;
+  /** Full flowed layout — ONE source of truth for render + hit-tests, so nothing
+   *  can overlap on short screens: logo → title → banner slot → buttons →
+   *  account chip → CTA, with the disclaimer pinned at the bottom. Spacing
+   *  compresses on compact viewports instead of colliding. */
+  layout(
+    vp: Viewport,
+    opts: { includeFree?: boolean; hasAccount?: boolean } = {},
+  ): {
+    buttons: Button[];
+    account: { x: number; y: number; w: number; h: number };
+    cta: { x: number; y: number; w: number; h: number };
+    titleY: number;
+    bannerY: number;
+  } {
+    const { w, h } = vp;
+    const compact = h < 660;
+    const bw = Math.min(w * 0.82, 340);
+    const bx = w / 2 - bw / 2;
+    const bh = compact ? 46 : 54;
+    const gap = compact ? 9 : 12;
+    const halfH = compact ? 40 : 46;
+
+    // Block heights below the tagline.
+    const buttonsH = bh * 2 + gap * 2 + (opts.includeFree ? halfH : bh);
+    const accountH = opts.hasAccount ? 30 + 8 : 0;
+    const ctaH = 30;
+    const blockH = buttonsH + 10 + accountH + ctaH;
+
+    // The block bottom-aligns just above the disclaimer; the title sits above it.
+    const blockBottom = h * 0.915 - 14;
+    const buttonsY0 = Math.max(h * 0.34, blockBottom - blockH);
+    const titleY = Math.max(64, buttonsY0 - (compact ? 64 : 92));
+    const bannerY = buttonsY0 - 12;
+
     const out: Button[] = [];
-    const add = (id: string, label: string, kind: Button['kind']): void => {
-      out.push({ id, x: bx, y, w: bw, h: bh, label, kind });
-      y += bh + gap;
-    };
-    add('challenge', COPY.challenge, 'primary');
-    add('practice', COPY.practice, 'gold');
-    if (includeFree) {
+    let y = buttonsY0;
+    out.push({ id: 'challenge', x: bx, y, w: bw, h: bh, label: COPY.challenge, kind: 'primary' });
+    y += bh + gap;
+    out.push({ id: 'practice', x: bx, y, w: bw, h: bh, label: COPY.practice, kind: 'gold' });
+    y += bh + gap;
+    if (opts.includeFree) {
       const half = (bw - gap) / 2;
-      const fh = 46;
-      out.push({ id: 'free', x: bx, y, w: half, h: fh, label: COPY.practiceFree, kind: 'ghost' });
-      out.push({ id: 'leaderboard', x: bx + half + gap, y, w: half, h: fh, label: COPY.leaderboard, kind: 'ghost' });
+      out.push({ id: 'free', x: bx, y, w: half, h: halfH, label: COPY.practiceFree, kind: 'ghost' });
+      out.push({ id: 'leaderboard', x: bx + half + gap, y, w: half, h: halfH, label: COPY.leaderboard, kind: 'ghost' });
+      y += halfH;
     } else {
-      add('leaderboard', COPY.leaderboard, 'ghost');
+      out.push({ id: 'leaderboard', x: bx, y, w: bw, h: bh, label: COPY.leaderboard, kind: 'ghost' });
+      y += bh;
     }
-    return out;
+    y += 10;
+    const accountW = Math.min(w * 0.6, 220);
+    const account = { x: w / 2 - accountW / 2, y: opts.hasAccount ? y : -100, w: accountW, h: 30 };
+    if (opts.hasAccount) y += 38;
+    const ctaW = Math.min(w * 0.66, 250);
+    const cta = { x: w / 2 - ctaW / 2, y, w: ctaW, h: ctaH };
+
+    return { buttons: out, account, cta, titleY, bannerY };
   }
 
-  /** The small brand-CTA chip under the mode buttons (this game IS the campaign —
-   *  keep the funnel present but light on the title). */
-  ctaRect(vp: Viewport): { x: number; y: number; w: number; h: number } {
-    const h = 30;
-    const w = Math.min(vp.w * 0.66, 250);
-    return { x: vp.w / 2 - w / 2, y: vp.h * 0.865, w, h };
+  /** Mode buttons — kept for callers that only need the button list. */
+  buttons(vp: Viewport, includeFree = false): Button[] {
+    return this.layout(vp, { includeFree }).buttons;
   }
 
   render(
@@ -64,34 +93,43 @@ export class Title {
     vp: Viewport,
     pulse: number,
     banner: string | null = null,
-    opts: { includeFree?: boolean; locked?: ReadonlySet<string> } = {},
+    opts: { includeFree?: boolean; locked?: ReadonlySet<string>; hasAccount?: boolean } = {},
   ): void {
     const { w, h } = vp;
     const cx = w / 2;
+    const L = this.layout(vp, opts);
+    const compact = h < 660;
 
+    // Logo plate scales down and everything between it and the title flexes, so
+    // the flowed block below never collides on short viewports. 80px floor keeps
+    // it clear of the two HUD chip rows (y 12–72) drawn by the Game on top.
+    const logoTop = Math.max(80, h * (compact ? 0.075 : 0.12));
+    let logoBottom = logoTop;
     if (this.ready) {
-      const lw = Math.min(w * 0.5, 280);
+      const lw = Math.min(w * (compact ? 0.4 : 0.5), compact ? 210 : 280);
       const lh = lw * (this.lockup.height / this.lockup.width);
-      const pad = Math.max(14, lw * 0.085);
+      const pad = Math.max(10, lw * 0.085);
       const pw = lw + pad * 2;
       const ph = lh + pad * 2;
       const px = cx - pw / 2;
-      const py = h * 0.14;
-      drawGlassPanel(ctx, px, py, pw, ph, Math.min(26, ph * 0.22));
-      ctx.drawImage(this.lockup, px + pad, py + pad, lw, lh);
+      drawGlassPanel(ctx, px, logoTop, pw, ph, Math.min(26, ph * 0.22));
+      ctx.drawImage(this.lockup, px + pad, logoTop + pad, lw, lh);
+      logoBottom = logoTop + ph;
     }
 
-    this.drawMotif(ctx, cx, h * 0.36, Math.min(w * 0.05, 20), pulse);
+    // Motif midway between the logo and the title (skipped when too tight).
+    const motifY = (logoBottom + L.titleY - 44) / 2;
+    if (motifY > logoBottom + 16) this.drawMotif(ctx, cx, motifY, Math.min(w * 0.05, 20), pulse);
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.text;
-    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.11, 46)}px ${fonts.family}`;
-    ctx.fillText(COPY.title, cx, h * 0.48);
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.11, compact ? 38 : 46)}px ${fonts.family}`;
+    ctx.fillText(COPY.title, cx, L.titleY);
 
     ctx.fillStyle = colors.textMuted;
-    ctx.font = `${fonts.weight.medium} ${Math.min(w * 0.042, 17)}px ${fonts.family}`;
-    ctx.fillText(COPY.tagline, cx, h * 0.48 + 30);
+    ctx.font = `${fonts.weight.medium} ${Math.min(w * 0.042, compact ? 14 : 17)}px ${fonts.family}`;
+    ctx.fillText(COPY.tagline, cx, L.titleY + (compact ? 22 : 28));
 
     // Incoming-challenge banner — so a challenged friend can't miss the duel.
     if (banner) {
@@ -99,14 +137,14 @@ export class Title {
       ctx.save();
       ctx.globalAlpha = ba;
       ctx.fillStyle = colors.rebateGold;
-      ctx.font = `${fonts.weight.bold} ${Math.min(w * 0.04, 15)}px ${fonts.family}`;
-      ctx.fillText(banner, cx, h * 0.552);
+      ctx.font = `${fonts.weight.bold} ${Math.min(w * 0.04, 14)}px ${fonts.family}`;
+      ctx.fillText(banner, cx, L.bannerY);
       ctx.restore();
     }
 
     // Out-of-tokens: ranked buttons render dimmed (still tappable — the tap
     // explains the refill; Practice stays free — PRD Story 1).
-    for (const b of this.buttons(vp, opts.includeFree)) {
+    for (const b of L.buttons) {
       const locked = opts.locked?.has(b.id) ?? false;
       if (locked) ctx.save();
       if (locked) ctx.globalAlpha = 0.45;
@@ -116,7 +154,7 @@ export class Title {
 
     // Small, distinct brand CTA — a gold-rimmed pill with a soft pulse (subtle,
     // not another big button: the campaign hook stays light on the title).
-    const cr = this.ctaRect(vp);
+    const cr = L.cta;
     const glow = 0.35 + 0.18 * Math.sin(pulse * 2.2);
     roundRectPath(ctx, cr.x, cr.y, cr.w, cr.h, cr.h / 2);
     ctx.fillStyle = 'rgba(245,196,81,0.08)';
@@ -132,9 +170,9 @@ export class Title {
 
     // Compliance disclaimer (SPEC §9) — visible on the title, not buried.
     ctx.fillStyle = 'rgba(138,148,166,0.8)';
-    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+    ctx.font = `${fonts.weight.medium} ${compact ? 10 : 11}px ${fonts.family}`;
     const lines = wrapText(ctx, COPY.disclaimer, Math.min(w * 0.84, 360));
-    lines.forEach((ln, i) => ctx.fillText(ln, cx, h * 0.93 + i * 14));
+    lines.forEach((ln, i) => ctx.fillText(ln, cx, h * 0.935 + i * 13));
   }
 
   private drawMotif(
