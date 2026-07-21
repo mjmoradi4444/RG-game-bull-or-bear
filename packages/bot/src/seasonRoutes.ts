@@ -185,6 +185,12 @@ export async function handleSeason(
     // Solo Quick Play can't claim a duel win (mode is signed into the token).
     const won = data.won === true && mt.k !== 'quick' && oppKind !== 'none';
 
+    // Mean decision time over scored base rounds — feeds the speed_outlier flag.
+    const avgMs =
+      baseRounds.length > 0
+        ? Math.round(baseRounds.reduce((a, r) => a + r.ms, 0) / baseRounds.length)
+        : 0;
+
     consume(mt.m); // single-use: burn before applying (replays → 409 above)
     const outcome = applyResult({
       u: ctx.u,
@@ -194,6 +200,8 @@ export async function handleSeason(
       roundsPlayed: baseRounds.length,
       won,
       oppKind: mt.k === 'quick' ? 'none' : oppKind,
+      mode: mt.k,
+      avgMs,
     });
 
     // Telegram's native in-chat board tracks the season RP total, best-effort

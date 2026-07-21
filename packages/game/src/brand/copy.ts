@@ -85,6 +85,28 @@ export const COPY = {
   prizeFloor: 'Play at least 20 ranked matches in the season to be eligible.',
   prizeClaim: 'Winners claim via /link in the bot — an active RebateGain account is required.',
   prizeTokensNote: 'Rush Tokens are a daily play allowance, not a currency, and can’t be bought.',
+  prizeLinkCta: 'Link your RebateGain account →',
+
+  // Email capture (PRD-ADMIN-EMAIL §5.4 — compliance-checked)
+  linkAccount: 'Link your account',
+  accountLinked: '✓ Account linked',
+  emailTitle: 'Link your RebateGain account',
+  emailIntro:
+    'Enter the email you registered with on rebategain.com. We use it only to find your account and apply your prize if you win.',
+  emailSave: 'Save email',
+  emailUpdate: 'Update',
+  emailRemove: 'Remove email',
+  emailNoAccount: 'Don’t have an account yet? Create one →',
+  emailPrivacy: 'Your email is stored only for prize delivery. Not shared, not used for marketing.',
+  emailSaved: 'Saved. Finish top 3 this season and we’ll raise your rebate share on this account.',
+  emailInvalid: 'That doesn’t look like a valid email.',
+  emailDidYouMean: (s: string): string => `Did you mean ${s}?`,
+  emailChangeLimit: 'You’ve changed your email too many times this season — contact support.',
+  emailFrozen: 'Email changes are locked while prizes are being applied.',
+  emailRateLimited: 'Please wait a moment and try again.',
+  emailNetwork: 'Couldn’t save — check your connection and try again.',
+  emailChangesLeft: (n: number): string => `${n} change${n === 1 ? '' : 's'} left this season`,
+  emailPrompt: 'You’re in the running — add your RebateGain email to be eligible for the prize.',
 
   // Round flow
   roundOf: (n: number, total: number): string => `Round ${n} / ${total}`,

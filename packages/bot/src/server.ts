@@ -10,6 +10,8 @@ import { submitGameScore } from './telegram';
 import { recordScore, topScores } from './leaderboard';
 import { handleMatchmaking } from './matchmaking';
 import { handleSeason } from './seasonRoutes';
+import { handleAccount } from './accountRoutes';
+import { handleAdmin } from './adminRoutes';
 
 // Signed launch tokens: score WRITES stay bounded (replay window), but generous
 // enough that a long play session doesn't silently lose its score — the original
@@ -97,6 +99,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   // Seasonal scoring + Rush Tokens (PRD-SCORING-TOKENS §8.2; see seasonRoutes.ts).
   if (await handleSeason(req, res, url, config.allowOrigin)) return;
+
+  // In-game account/email capture (PRD-ADMIN-EMAIL §5; see accountRoutes.ts).
+  if (await handleAccount(req, res, url, config.allowOrigin)) return;
+
+  // Admin dashboard — SAME-ORIGIN ONLY (never gets the CORS wildcard) — must come
+  // before static/CORS handling (PRD-ADMIN-EMAIL §6; see adminRoutes.ts).
+  if (await handleAdmin(req, res, url)) return;
 
   if (req.method === 'POST' && url.pathname === '/score') {
     const data = JSON.parse((await readBody(req)) || '{}') as { gctx?: string; score?: number };

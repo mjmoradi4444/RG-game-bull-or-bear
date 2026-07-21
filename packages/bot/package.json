@@ -7,7 +7,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "admin:hash": "tsx src/adminHash.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

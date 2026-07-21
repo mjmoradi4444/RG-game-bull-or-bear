@@ -33,7 +33,16 @@ import {
   type SeasonBoard,
   type SeasonProfile,
 } from '../net/SeasonApi';
+import {
+  fetchAccount,
+  saveEmail,
+  deleteEmail,
+  isValidEmailClient,
+  suggestEmailClient,
+  type AccountView,
+} from '../net/AccountApi';
 import { Title } from '../ui/Title';
+import { EmailOverlay } from '../ui/EmailOverlay';
 import { RoundView } from '../ui/RoundView';
 import { type Button, drawButton, hitButton } from '../ui/Button';
 import { roundRectPath } from '../ui/glass';
@@ -116,6 +125,17 @@ export class Game {
   private boardData: SeasonBoard | null = null;
   private readonly avatarCache = new Map<number, HTMLImageElement>();
 
+  // Email capture (PRD-ADMIN-EMAIL §5). account is null in plain-browser dev.
+  private account: AccountView | null = null;
+  private readonly emailOverlay = new EmailOverlay();
+  /** Screen to return to when leaving the email screen. */
+  private emailReturn: Screen = 'title';
+  private emailMsg: { text: string; kind: 'ok' | 'err' } | null = null;
+  private emailSuggestion: string | null = null;
+  private emailSaving = false;
+  /** Whether the one-time result-screen email nudge has been shown/dismissed. */
+  private emailPromptDismissed = false;
+
   // Async duel (SPEC §4): the seed both players share + the incoming challenger.
   private matchSeed = 0;
   private opponent: Challenge | null = null;
@@ -159,6 +179,10 @@ export class Game {
     this.pulse += dt;
     this.bgScroll += dt * 16;
     this.shake = Math.max(0, this.shake - dt);
+    // The email screen owns an HTML <input> overlay; keep it shown+aligned only
+    // while that screen is up, and torn down the moment we navigate away.
+    if (this.screen === 'email') this.emailOverlay.reposition(this.emailInputRect());
+    else if (this.emailOverlay.visible()) this.emailOverlay.hide();
     if (this.input.consumeFire()) this.onTap();
     const gesture = this.input.takeGesture(); // drained every tick to avoid buildup
     this.particles.update(dt);
@@ -257,6 +281,10 @@ export class Game {
     // Season profile (tokens / streak / rank) — null in plain-browser dev.
     void fetchProfile().then((p) => {
       this.profile = p;
+    });
+    // Linked-account state for the email flow (null without a bot launch context).
+    void fetchAccount().then((a) => {
+      this.account = a;
     });
   }
 
@@ -611,13 +639,150 @@ export class Game {
         if (hitButton(this.backButtons(), px, py) === 'back') {
           this.audio.coin();
           this.screen = this.boardData ? 'leaderboard' : 'title';
+        } else if (this.account && this.hitRect(this.prizeLinkCtaRect(), px, py)) {
+          this.audio.coin();
+          this.enterEmail('prizes');
         }
+        break;
+      case 'email':
+        this.onTapEmail(px, py);
         break;
     }
   }
 
+  private onTapEmail(px: number, py: number): void {
+    if (hitButton(this.backButtons(), px, py) === 'back') {
+      this.audio.coin();
+      this.leaveEmail();
+      return;
+    }
+    // Tap the "Did you mean …?" suggestion to accept it.
+    if (this.emailSuggestion && this.hitRect(this.emailSuggestionRect(), px, py)) {
+      this.emailOverlay.setValue(this.emailSuggestion);
+      this.emailSuggestion = null;
+      this.emailMsg = null;
+      this.audio.coin();
+      return;
+    }
+    if (this.hitRect(this.emailCreateRect(), px, py)) {
+      this.audio.coin();
+      this.adapter.openLink(SIGNUP_URL);
+      return;
+    }
+    const id = hitButton(this.emailButtons(), px, py);
+    if (id === 'save') this.onSaveEmail();
+    else if (id === 'remove') this.onRemoveEmail();
+  }
+
+  private emailSuggestionRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    return { x: w * 0.1, y: h * 0.44 + 56, w: w * 0.8, h: 22 };
+  }
+
+  private emailCreateRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    return { x: w * 0.1, y: h * 0.72, w: w * 0.8, h: 22 };
+  }
+
+  private prizeLinkCtaRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    const cw = Math.min(w * 0.84, 360);
+    return { x: w / 2 - cw / 2, y: h * 0.8, w: cw, h: 46 };
+  }
+
   private hitRect(r: { x: number; y: number; w: number; h: number }, px: number, py: number): boolean {
     return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+  }
+
+  // ---- email capture (PRD-ADMIN-EMAIL §5) ---------------------------------
+
+  private enterEmail(from: Screen): void {
+    this.emailReturn = from;
+    this.emailMsg = null;
+    this.emailSuggestion = null;
+    this.screen = 'email';
+    this.emailOverlay.show(this.emailInputRect(), '', () => this.onSaveEmail());
+  }
+
+  private leaveEmail(): void {
+    this.emailOverlay.hide();
+    this.screen = this.emailReturn;
+  }
+
+  private onSaveEmail(): void {
+    if (this.emailSaving) return;
+    const email = this.emailOverlay.value().trim();
+    this.emailSuggestion = suggestEmailClient(email);
+    if (!isValidEmailClient(email)) {
+      this.emailMsg = { text: COPY.emailInvalid, kind: 'err' };
+      this.audio.loss();
+      return;
+    }
+    this.emailSaving = true;
+    this.emailMsg = null;
+    void saveEmail(email).then((r) => {
+      this.emailSaving = false;
+      if (r.ok) {
+        this.audio.win();
+        this.adapter.haptic('success');
+        this.emailSuggestion = null;
+        this.emailMsg = { text: COPY.emailSaved, kind: 'ok' };
+        if (this.account) {
+          this.account.masked = r.masked;
+          this.account.changesLeft = r.changesLeft;
+        } else {
+          this.account = { masked: r.masked, changesLeft: r.changesLeft, emailSetAt: Date.now(), eligible: false, frozen: false };
+        }
+        this.emailOverlay.setValue('');
+      } else {
+        this.audio.loss();
+        const map: Record<string, string> = {
+          invalid_email: COPY.emailInvalid,
+          change_limit: COPY.emailChangeLimit,
+          frozen: COPY.emailFrozen,
+          rate_limited: COPY.emailRateLimited,
+          network: COPY.emailNetwork,
+        };
+        this.emailMsg = { text: map[r.error] ?? COPY.emailNetwork, kind: 'err' };
+      }
+    });
+  }
+
+  private onRemoveEmail(): void {
+    void deleteEmail().then((ok) => {
+      if (ok && this.account) {
+        this.account.masked = null;
+        this.emailMsg = { text: COPY.emailRemove, kind: 'ok' };
+        this.audio.coin();
+      } else {
+        this.emailMsg = { text: COPY.emailFrozen, kind: 'err' };
+      }
+    });
+  }
+
+  private emailInputRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    const iw = Math.min(w * 0.84, 360);
+    return { x: w / 2 - iw / 2, y: h * 0.44, w: iw, h: 50 };
+  }
+
+  private emailButtons(): Button[] {
+    const { w, h } = this.vp;
+    const bw = Math.min(w * 0.84, 360);
+    const bx = w / 2 - bw / 2;
+    const bh = 50;
+    const out: Button[] = [];
+    out.push({ id: 'save', x: bx, y: h * 0.58, w: bw, h: bh, label: this.account?.masked ? COPY.emailUpdate : COPY.emailSave, kind: 'gold' });
+    if (this.account?.masked) {
+      out.push({ id: 'remove', x: bx, y: h * 0.58 + bh + 10, w: bw, h: 44, label: COPY.emailRemove, kind: 'ghost' });
+    }
+    return out;
+  }
+
+  private accountChipRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    const cw = Math.min(w * 0.6, 220);
+    return { x: w / 2 - cw / 2, y: h * 0.8, w: cw, h: 30 };
   }
 
   /** Season chips row (top-left, mirrors the mute chip): tokens · streak · countdown. */
@@ -661,6 +826,12 @@ export class Game {
 
   private onTapTitle(px: number, py: number): void {
     if (this.onChipTap(px, py)) return;
+    // Account-link chip (only when launched from the bot — email is for prizes).
+    if (this.account && this.hitRect(this.accountChipRect(), px, py)) {
+      this.audio.coin();
+      this.enterEmail('title');
+      return;
+    }
     // The small brand-CTA chip (the campaign funnel, kept light).
     const cr = this.title.ctaRect(this.vp);
     if (px >= cr.x && px <= cr.x + cr.w && py >= cr.y && py <= cr.y + cr.h) {
@@ -778,7 +949,60 @@ export class Game {
     this.adapter.haptic('impact');
   }
 
+  /** One-time nudge: a ranked top-20 finisher with no linked email (PRD §5.1),
+   *  rate-limited to once per 24h via localStorage. */
+  private shouldPromptEmail(): boolean {
+    if (!this.account || this.account.masked || this.emailPromptDismissed) return false;
+    const r = this.rpResult;
+    if (!r || typeof r === 'string' || r.rank === 0 || r.rank > 20) return false;
+    try {
+      const last = Number(localStorage.getItem('bob_email_prompt') ?? '0');
+      if (Date.now() - last < 24 * 60 * 60 * 1000) return false;
+    } catch {
+      /* localStorage unavailable → still show it */
+    }
+    return true;
+  }
+
+  private resultEmailPromptRect(): { x: number; y: number; w: number; h: number } {
+    const { w, h } = this.vp;
+    const cw = Math.min(w * 0.9, 380);
+    return { x: w / 2 - cw / 2, y: h * 0.085, w: cw, h: 42 };
+  }
+
+  /** The one-time "add your email" banner on the result screen (tappable). */
+  private renderResultEmailPrompt(): void {
+    const { ctx } = this.vp;
+    const r = this.resultEmailPromptRect();
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, 10);
+    ctx.fillStyle = 'rgba(245,196,81,0.1)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(245,196,81,0.5)';
+    ctx.stroke();
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    wrapText(ctx, COPY.emailPrompt, r.w - 20).forEach((ln, i, a) =>
+      ctx.fillText(ln, r.x + r.w / 2, r.y + r.h / 2 + (i - (a.length - 1) / 2) * 14),
+    );
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+  }
+
   private onTapResult(px: number, py: number): void {
+    if (this.shouldPromptEmail() && this.hitRect(this.resultEmailPromptRect(), px, py)) {
+      this.audio.coin();
+      this.emailPromptDismissed = true;
+      try {
+        localStorage.setItem('bob_email_prompt', String(Date.now()));
+      } catch {
+        /* ignore */
+      }
+      this.enterEmail('result');
+      return;
+    }
     const id = hitButton(this.resultButtons(), px, py);
     if (!id) return;
     this.audio.coin();
@@ -900,9 +1124,11 @@ export class Game {
       const locked =
         this.profile && this.profile.tokens <= 0 ? new Set(['challenge', 'practice']) : undefined;
       this.title.render(ctx, this.vp, this.pulse, banner, { includeFree: !!this.profile, locked });
+      if (this.account) this.renderAccountChip();
     }
     else if (this.screen === 'levelSelect') this.renderLevelSelect();
     else if (this.screen === 'prizes') this.renderPrizes();
+    else if (this.screen === 'email') this.renderEmail();
     else if (this.screen === 'lobby') this.renderLobby();
     else if (this.screen === 'vs') this.renderVs();
     else if (this.screen === 'round' && this.match) {
@@ -1285,6 +1511,8 @@ export class Game {
 
     for (const b of this.resultButtons()) drawButton(ctx, b);
 
+    if (this.shouldPromptEmail()) this.renderResultEmailPrompt();
+
     ctx.fillStyle = 'rgba(138,148,166,0.7)';
     ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
     wrapText(ctx, COPY.pointsDisclaimer, Math.min(w * 0.86, 360)).forEach((ln, i) =>
@@ -1652,6 +1880,110 @@ export class Game {
       });
       y += 6;
     }
+
+    // The funnel: link your RebateGain account (only when launched from the bot).
+    if (this.account) {
+      const cta = this.prizeLinkCtaRect();
+      drawButton(ctx, {
+        id: 'link',
+        ...cta,
+        label: this.account.masked ? COPY.accountLinked : COPY.prizeLinkCta,
+        kind: this.account.masked ? 'ghost' : 'primary',
+      });
+    }
+
+    for (const bt of this.backButtons()) drawButton(ctx, bt);
+    ctx.textAlign = 'left';
+  }
+
+  /** Title-screen account chip: "Link your account" / "✓ Account linked". */
+  private renderAccountChip(): void {
+    const { ctx } = this.vp;
+    const r = this.accountChipRect();
+    const linked = !!this.account?.masked;
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, r.h / 2);
+    ctx.fillStyle = linked ? 'rgba(22,199,132,0.1)' : 'rgba(10,120,255,0.12)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = linked ? 'rgba(22,199,132,0.5)' : 'rgba(10,120,255,0.55)';
+    ctx.stroke();
+    ctx.fillStyle = linked ? colors.up : colors.text;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(linked ? COPY.accountLinked : COPY.linkAccount, r.x + r.w / 2, r.y + r.h / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+  }
+
+  /** The email-capture screen. A real HTML <input> is overlaid (EmailOverlay);
+   *  everything else is canvas. */
+  private renderEmail(): void {
+    const { ctx, w, h } = this.vp;
+    const cx = w / 2;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+
+    ctx.fillStyle = colors.text;
+    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.06, 24)}px ${fonts.family}`;
+    ctx.fillText(COPY.emailTitle, cx, h * 0.16);
+
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+    wrapText(ctx, COPY.emailIntro, Math.min(w * 0.84, 350)).forEach((ln, i) =>
+      ctx.fillText(ln, cx, h * 0.24 + i * 18),
+    );
+
+    // Current linked email, if any.
+    if (this.account?.masked) {
+      ctx.fillStyle = colors.up;
+      ctx.font = `${fonts.weight.bold} 13px ${fonts.family}`;
+      ctx.fillText(`✓ ${this.account.masked}`, cx, h * 0.38);
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+      ctx.fillText(COPY.emailChangesLeft(this.account.changesLeft), cx, h * 0.38 + 16);
+    }
+
+    // The input frame is drawn to match the overlaid HTML input's rect.
+    const ir = this.emailInputRect();
+    roundRectPath(ctx, ir.x, ir.y, ir.w, ir.h, 10);
+    ctx.strokeStyle = colors.border;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Validation message / "did you mean" suggestion.
+    if (this.emailSuggestion) {
+      const sr = this.emailSuggestionRect();
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+      ctx.fillText(COPY.emailDidYouMean(this.emailSuggestion), cx, sr.y + 14);
+    } else if (this.emailMsg) {
+      ctx.fillStyle = this.emailMsg.kind === 'ok' ? colors.up : colors.down;
+      ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+      wrapText(ctx, this.emailMsg.text, Math.min(w * 0.84, 350)).forEach((ln, i) =>
+        ctx.fillText(ln, cx, this.emailSuggestionRect().y + 14 + i * 15),
+      );
+    }
+
+    for (const b of this.emailButtons()) {
+      if (b.id === 'save' && this.emailSaving) {
+        drawButton(ctx, { ...b, label: COPY.rpPending });
+      } else {
+        drawButton(ctx, b);
+      }
+    }
+
+    // "Create an account" link + binding privacy line.
+    const crr = this.emailCreateRect();
+    ctx.fillStyle = colors.rebateGold;
+    ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
+    ctx.fillText(COPY.emailNoAccount, cx, crr.y + 14);
+
+    ctx.fillStyle = 'rgba(138,148,166,0.85)';
+    ctx.font = `${fonts.weight.medium} 11px ${fonts.family}`;
+    wrapText(ctx, COPY.emailPrivacy, Math.min(w * 0.84, 350)).forEach((ln, i) =>
+      ctx.fillText(ln, cx, h * 0.76 + i * 14),
+    );
 
     for (const bt of this.backButtons()) drawButton(ctx, bt);
     ctx.textAlign = 'left';

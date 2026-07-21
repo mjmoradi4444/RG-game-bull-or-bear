@@ -102,6 +102,28 @@ season at 0 RP. Winners are DM'd and claim via the bot's `/link` command. `/scor
 `/highscores` remain for backward-compat during rollout. Math is unit-tested
 (`_rptest.ts`); RP is never trusted from the client (recomputed + clamped).
 
+**Email capture & admin dashboard** (`PRD-ADMIN-EMAIL.md`, Phase A) — makes the rebate
+prize deliverable by bridging a Telegram player to a RebateGain account.
+
+- *In-game email capture:* an email screen (a real HTML `<input>` overlaid on the canvas
+  — the one place the canvas-only rule is broken, for native keyboard/autofill) stores the
+  address the player registered with on rebategain.com, as a *matching hint* (no
+  verification in v1). Title chip + Prizes-sheet CTA + a one-time top-20 result nudge.
+  `POST /account/email` (validate → normalize → duplicate-flag → 3-changes/season cap →
+  freeze during prize application), `GET /account`, `POST /account/delete`. Validation is
+  unit-tested (`_emailtest.ts`).
+- *Admin dashboard* at **`/admin`** (server-rendered HTML + vanilla JS, no build step,
+  served by the same bot): Overview tiles, a searchable/sortable Players table + detail
+  drawer, Season standings, the **Prize Workflow** (per-winner eligibility, Mark-applied,
+  Roll-down to the next eligible rank, winner DMs, UTF-8-BOM CSV export), an Anomalies/
+  review queue (heuristic flags: duplicate-email, accuracy/speed outliers, burst play),
+  and an append-only Audit log for every mutating action. Auth is scrypt (built-in, no
+  dep) + an HttpOnly/SameSite=Strict session cookie with per-IP lockout; admin routes are
+  same-origin only (never the game API's CORS wildcard) with `no-store`/`DENY`/strict-CSP.
+  **Disabled until `ADMIN_USER` + `ADMIN_PASSWORD_HASH` are set** (`npm run admin:hash --
+  '<password>'`). The RebateGain back office is behind a one-module seam
+  (`rebategainAdapter.ts`, manual now / API later).
+
 **Deploy:** frontend (`npm run build -w @rebate-rush/game`) to Cloudflare Pages /
 Vercel (HTTPS); bot to Railway / Render / Fly (set env; switch long polling to a
 webhook for production).
@@ -143,6 +165,13 @@ webhook for production).
   Prizes sheet. Server-authoritative (recompute + clamp + single-use tokens);
   `_rptest.ts` covers the RP math. **Remaining (B/C):** rival/Happy-Hour nudges, share
   cards, daily quests, leagues, server-side round validation, automated prize application.
+- [~] **Phase 8 — email capture + admin dashboard** (`PRD-ADMIN-EMAIL.md`): Phase A
+  shipped — in-game email capture (HTML input overlay, validation/dedupe/change-cap/
+  freeze, `_emailtest.ts`), and the `/admin` dashboard (scrypt+session auth with lockout,
+  Overview/Players/Season/Prizes/Flags/Audit, prize apply + roll-down + CSV + winner DMs,
+  heuristic anomaly flags, append-only audit log, back-office adapter seam). Admin routes
+  are same-origin only and disabled until credentials are provisioned. **Remaining (B/C):**
+  Telegram 2FA, sparklines, expiry auto-reminders, and the automated back-office API.
 
 > Verified locally: HMAC sign/verify/expiry/clamp unit-tested; the score API's routing,
 > CORS, and 401 gate confirmed via curl; bot + game type-check clean. The
