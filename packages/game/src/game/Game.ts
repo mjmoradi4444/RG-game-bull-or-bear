@@ -1925,26 +1925,117 @@ export class Game {
     return { x: w / 2 - cw / 2, y: startY + idx * (ch + gap), w: cw, h: ch };
   }
 
-  private resultButtons(): Button[] {
-    const { w, h } = this.vp;
+  /** Win/lose/on-time for the async-challenge result (shared by height + render). */
+  private duelOutcome(): { win: boolean; lose: boolean; onTime: boolean } {
+    if (!this.opponent || !this.match) return { win: false, lose: false, onTime: false };
+    const correct = this.match.correctCount;
+    const opp = this.opponent.score;
+    let win = correct > opp;
+    let lose = correct < opp;
+    let onTime = false;
+    const oppMs = this.opponent.timeMs;
+    if (!win && !lose && oppMs && this.totalMs > 0 && Math.round(this.totalMs) !== oppMs) {
+      win = this.totalMs < oppMs;
+      lose = !win;
+      onTime = true;
+    }
+    return { win, lose, onTime };
+  }
+
+  /** Height (px) the mode block (live / async duel / solo) will occupy. */
+  private modeBlockHeight(): number {
+    if (this.live) {
+      if (!this.mpFinal) return 24;
+      const note = !!(this.mpFinal.forfeit || this.mpFinal.onTime || (this.mpFinal.sudden && this.mpFinal.sudden > 0));
+      return note ? 62 : 40;
+    }
+    if (this.mode === 'challenge') {
+      if (!this.opponent) return 22;
+      return this.duelOutcome().onTime ? 62 : 40;
+    }
+    return 24; // solo accuracy line
+  }
+
+  /** Height (px) the ranked RP strip will occupy (0 when not ranked). */
+  private rpBlockHeight(): number {
+    const r = this.rpResult;
+    if (!r) return 0;
+    if (r === 'pending' || r === 'failed') return 14 + 16;
+    if (typeof r === 'string') return 0;
+    return 14 + 42; // leading gap + (+RP line + season line)
+  }
+
+  /**
+   * The result screen laid out as one vertical flow (single source of truth for
+   * both drawing and hit-testing) so nothing overlaps and it fits any height:
+   * label → level badge → big score → mode block → RP strip → rebate reminder,
+   * then the button block placed right after the content (clamped so it always
+   * clears the bottom disclaimer). Fonts/gaps compress on short screens.
+   */
+  private resultLayout(): {
+    compact: boolean;
+    labelY: number;
+    badgeY: number;
+    scoreY: number;
+    scoreFont: number;
+    modeY: number;
+    rpY: number;
+    reminderY: number;
+    reminderLines: string[];
+    disclaimerY: number;
+    buttons: Button[];
+  } {
+    const { ctx, w, h } = this.vp;
+    const compact = h < 640;
+
+    let y = Math.max(h * 0.05, 46) + 14; // first baseline (ROUND COMPLETE)
+    const labelY = y;
+    y += 22;
+    const badgeY = y;
+    const scoreFont = Math.min(w * 0.2, compact ? 58 : 84);
+    y += (compact ? 12 : 18) + scoreFont * 0.82;
+    const scoreY = y;
+    // Clear the big score's descenders before the mode block.
+    y += compact ? 20 : 28;
+    const modeY = y;
+    y += this.modeBlockHeight();
+    const rpY = y;
+    y += this.rpBlockHeight();
+    const reminderY = y + (compact ? 10 : 14);
+    ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
+    const reminderLines = wrapText(ctx, COPY.rebateReminder, Math.min(w * 0.82, 340));
+    const contentBottom = reminderY + reminderLines.length * 15;
+
+    // Button block, placed right after the content but clamped above the disclaimer.
     const bw = Math.min(w * 0.82, 360);
     const bx = w / 2 - bw / 2;
-    const bh = 50;
-    const gap = 11;
-    let y = h * 0.52;
-    const out: Button[] = [];
-    // Top-left menu (back to title).
-    out.push({ id: 'menu', x: 14, y: h * 0.035, w: 96, h: 36, label: `‹ ${COPY.menu}`, kind: 'ghost' });
-    // The funnel CTA first (the goal), then rematch, then a leaderboard / share row.
-    out.push({ id: 'cta', x: bx, y, w: bw, h: bh, label: COPY.cta, kind: 'primary' });
-    y += bh + gap;
-    const replayLabel = this.mode === 'challenge' ? COPY.rematch : COPY.playAgain;
-    out.push({ id: 'rematch', x: bx, y, w: bw, h: bh, label: replayLabel, kind: 'gold' });
-    y += bh + gap;
+    const bh = compact ? 46 : 50;
+    const gap = compact ? 9 : 11;
     const half = (bw - gap) / 2;
-    out.push({ id: 'leaderboard', x: bx, y, w: half, h: bh, label: COPY.leaderboard, kind: 'ghost' });
-    out.push({ id: 'share', x: bx + half + gap, y, w: half, h: bh, label: COPY.share, kind: 'ghost' });
-    return out;
+    const blockH = bh * 3 + gap * 2;
+    const disclaimerY = h - (compact ? 24 : 30);
+    const maxTop = disclaimerY - 14 - blockH;
+    // Sit the buttons just below the content, drifting toward center when there's
+    // slack (nicer on tall phones), but never past the disclaimer.
+    const lead = Math.max(compact ? 12 : 18, (maxTop - contentBottom) * 0.32);
+    const buttonsTop = Math.min(contentBottom + lead, maxTop);
+
+    let by = buttonsTop;
+    const buttons: Button[] = [];
+    buttons.push({ id: 'menu', x: 14, y: Math.max(10, h * 0.03), w: 96, h: 36, label: `‹ ${COPY.menu}`, kind: 'ghost' });
+    buttons.push({ id: 'cta', x: bx, y: by, w: bw, h: bh, label: COPY.cta, kind: 'primary' });
+    by += bh + gap;
+    const replayLabel = this.mode === 'challenge' ? COPY.rematch : COPY.playAgain;
+    buttons.push({ id: 'rematch', x: bx, y: by, w: bw, h: bh, label: replayLabel, kind: 'gold' });
+    by += bh + gap;
+    buttons.push({ id: 'leaderboard', x: bx, y: by, w: half, h: bh, label: COPY.leaderboard, kind: 'ghost' });
+    buttons.push({ id: 'share', x: bx + half + gap, y: by, w: half, h: bh, label: COPY.share, kind: 'ghost' });
+
+    return { compact, labelY, badgeY, scoreY, scoreFont, modeY, rpY, reminderY, reminderLines, disclaimerY, buttons };
+  }
+
+  private resultButtons(): Button[] {
+    return this.resultLayout().buttons;
   }
 
   // ---- render ------------------------------------------------------------
@@ -2313,93 +2404,92 @@ export class Game {
   }
 
   private renderResult(): void {
-    const { ctx, w, h } = this.vp;
+    const { ctx, w } = this.vp;
     const cx = w / 2;
     const m = this.match;
     const correct = m ? m.correctCount : 0;
     const total = m ? m.total : CONFIG.ROUNDS;
+    const L = this.resultLayout();
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
-    ctx.fillText(COPY.matchResult.toUpperCase(), cx, h * 0.16);
+    ctx.fillText(COPY.matchResult.toUpperCase(), cx, L.labelY);
 
     // Level badge (which difficulty this run was).
     ctx.fillStyle = this.level.color;
     ctx.font = `${fonts.weight.bold} 14px ${fonts.family}`;
-    ctx.fillText(`${this.level.name.toUpperCase()} · ${this.level.weight}× pts`, cx, h * 0.16 + 22);
+    ctx.fillText(`${this.level.name.toUpperCase()} · ${this.level.weight}× pts`, cx, L.badgeY);
 
     ctx.fillStyle = colors.text;
-    ctx.font = `${fonts.weight.black} ${Math.min(w * 0.2, 84)}px ${fonts.family}`;
-    ctx.fillText(`${correct}/${total}`, cx, h * 0.3);
+    ctx.font = `${fonts.weight.black} ${L.scoreFont}px ${fonts.family}`;
+    ctx.fillText(`${correct}/${total}`, cx, L.scoreY);
 
     if (this.live) {
-      this.renderLiveResult(total, h, cx);
+      this.renderLiveResult(total, cx, L.modeY);
     } else if (this.mode === 'challenge') {
-      this.renderDuelLine(correct, total, h, cx);
+      this.renderDuelLine(correct, total, cx, L.modeY);
     } else {
       ctx.fillStyle = colors.rebateGold;
       ctx.font = `${fonts.weight.bold} 16px ${fonts.family}`;
       const streak = this.bestCombo >= 2 ? `   ·   ${COPY.bestStreak} ×${this.bestCombo}` : '';
-      ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}${streak}`, cx, h * 0.36);
+      ctx.fillText(`${accuracyPct(correct, total)}% ${COPY.accuracyLabel}${streak}`, cx, L.modeY + 16);
     }
 
-    // Ranked RP earned + season total + rank delta (PRD Story 2). Only for ranked
-    // matches (rpResult set); free practice and legacy dev skip it.
-    if (this.rpResult) this.renderRp(cx, h);
+    // Ranked RP earned + season total + rank delta (PRD Story 2), stacked BELOW the
+    // mode block (no more overlap). Only for ranked matches (rpResult set).
+    if (this.rpResult) this.renderRp(cx, L.rpY);
 
     ctx.fillStyle = 'rgba(245,196,81,0.9)';
     ctx.font = `${fonts.weight.medium} 13px ${fonts.family}`;
     ctx.textAlign = 'center';
-    wrapText(ctx, COPY.rebateReminder, Math.min(w * 0.82, 340)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.475 + i * 16),
-    );
+    L.reminderLines.forEach((ln, i) => ctx.fillText(ln, cx, L.reminderY + i * 15));
 
-    for (const b of this.resultButtons()) drawButton(ctx, b);
+    for (const b of L.buttons) drawButton(ctx, b);
 
     if (this.shouldPromptEmail()) this.renderResultEmailPrompt();
 
     ctx.fillStyle = 'rgba(138,148,166,0.7)';
     ctx.font = `${fonts.weight.medium} 10px ${fonts.family}`;
     wrapText(ctx, COPY.pointsDisclaimer, Math.min(w * 0.86, 360)).forEach((ln, i) =>
-      ctx.fillText(ln, cx, h * 0.955 + i * 13),
+      ctx.fillText(ln, cx, L.disclaimerY + i * 12),
     );
     ctx.textAlign = 'left';
   }
 
-  /** Ranked RP strip on the result screen (PRD Story 2): +RP · season total · rank Δ. */
-  private renderRp(cx: number, h: number): void {
+  /** Ranked RP strip (PRD Story 2): +RP · season total · rank Δ, drawn from `y`. */
+  private renderRp(cx: number, y: number): void {
     const { ctx } = this.vp;
     ctx.textAlign = 'center';
     const r = this.rpResult;
     if (!r) return;
+    const top = y + 14; // leading gap (matches rpBlockHeight)
     if (r === 'pending') {
       ctx.fillStyle = colors.textMuted;
       ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
-      ctx.fillText(COPY.rpPending, cx, h * 0.405);
+      ctx.fillText(COPY.rpPending, cx, top);
       return;
     }
     if (r === 'failed') {
       ctx.fillStyle = colors.down;
       ctx.font = `${fonts.weight.semibold} 12px ${fonts.family}`;
-      ctx.fillText(COPY.rpFailed, cx, h * 0.405);
+      ctx.fillText(COPY.rpFailed, cx, top);
       return;
     }
     if (typeof r === 'string') return;
-    // Big +RP with the delta chip beside it.
     ctx.fillStyle = colors.up;
     ctx.font = `${fonts.weight.black} 22px ${fonts.family}`;
-    ctx.fillText(COPY.rpEarned(r.rp), cx, h * 0.405);
+    ctx.fillText(COPY.rpEarned(r.rp), cx, top);
     // Season total + rank (with a → delta when the rank moved up).
     ctx.fillStyle = colors.textMuted;
     ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
     const delta = r.rankDelta > 0 ? `  ·  ${COPY.rankDelta(r.rank + r.rankDelta, r.rank)}` : '';
-    ctx.fillText(`${COPY.seasonTotal(r.seasonRp, r.rank)}${delta}`, cx, h * 0.405 + 20);
+    ctx.fillText(`${COPY.seasonTotal(r.seasonRp, r.rank)}${delta}`, cx, top + 22);
   }
 
-  /** Live 1-v-1 result: the server's verdict (or "waiting" until it lands). */
-  private renderLiveResult(total: number, h: number, cx: number): void {
+  /** Live 1-v-1 result: the server's verdict (or "waiting" until it lands), from `y`. */
+  private renderLiveResult(total: number, cx: number, y: number): void {
     const { ctx } = this.vp;
     const f = this.mpFinal;
     const oppName = this.mpMatched?.opp.name ?? 'Opponent';
@@ -2410,7 +2500,7 @@ export class Game {
       ctx.globalAlpha = this.mpDropped ? 1 : a;
       ctx.fillStyle = this.mpDropped ? colors.down : colors.textMuted;
       ctx.font = `${fonts.weight.semibold} 14px ${fonts.family}`;
-      ctx.fillText(this.mpDropped ? COPY.connectionLost : COPY.waitingOpponent, cx, h * 0.375);
+      ctx.fillText(this.mpDropped ? COPY.connectionLost : COPY.waitingOpponent, cx, y + 4);
       ctx.restore();
       return;
     }
@@ -2419,13 +2509,13 @@ export class Game {
     ctx.fillText(
       `${COPY.you} ${f.you.score}/${total}   ${COPY.vs}   ${oppName} ${f.opp.score}/${total}`,
       cx,
-      h * 0.355,
+      y,
     );
     const win = f.winner === 'you';
     const lose = f.winner === 'opp';
     ctx.fillStyle = win ? colors.up : lose ? colors.down : colors.textMuted;
     ctx.font = `${fonts.weight.black} 20px ${fonts.family}`;
-    ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, h * 0.4);
+    ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, y + 28);
     // How it was decided (sudden death / speed / forfeit).
     const note = f.forfeit
       ? COPY.oppLeftWin
@@ -2437,42 +2527,32 @@ export class Game {
     if (note) {
       ctx.fillStyle = colors.rebateGold;
       ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
-      ctx.fillText(note, cx, h * 0.428);
+      ctx.fillText(note, cx, y + 50);
     }
   }
 
-  /** The duel head-to-head (incoming challenge) or the share prompt (outgoing). */
-  private renderDuelLine(correct: number, total: number, h: number, cx: number): void {
+  /** Async challenge head-to-head (or the outgoing share prompt), drawn from `y`. */
+  private renderDuelLine(correct: number, total: number, cx: number, y: number): void {
     const { ctx } = this.vp;
     ctx.textAlign = 'center';
     if (this.opponent) {
       const opp = this.opponent.score;
       ctx.fillStyle = colors.text;
       ctx.font = `${fonts.weight.bold} 15px ${fonts.family}`;
-      ctx.fillText(`${COPY.you} ${correct}/${total}   ${COPY.vs}   ${this.opponent.name} ${opp}/${total}`, cx, h * 0.36);
-      // Score decides; a tied score falls back to total decision time when the
-      // challenge link carried it (faster wins — SPEC §4.3).
-      let win = correct > opp;
-      let lose = correct < opp;
-      let onTime = false;
-      const oppMs = this.opponent.timeMs;
-      if (!win && !lose && oppMs && this.totalMs > 0 && Math.round(this.totalMs) !== oppMs) {
-        win = this.totalMs < oppMs;
-        lose = !win;
-        onTime = true;
-      }
+      ctx.fillText(`${COPY.you} ${correct}/${total}   ${COPY.vs}   ${this.opponent.name} ${opp}/${total}`, cx, y);
+      const { win, lose, onTime } = this.duelOutcome();
       ctx.fillStyle = win ? colors.up : lose ? colors.down : colors.textMuted;
       ctx.font = `${fonts.weight.black} 20px ${fonts.family}`;
-      ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, h * 0.41);
+      ctx.fillText(win ? COPY.youWin : lose ? COPY.youLose : COPY.tie, cx, y + 28);
       if (onTime) {
         ctx.fillStyle = colors.rebateGold;
         ctx.font = `${fonts.weight.medium} 12px ${fonts.family}`;
-        ctx.fillText(COPY.wonOnTime, cx, h * 0.438);
+        ctx.fillText(COPY.wonOnTime, cx, y + 50);
       }
     } else {
       ctx.fillStyle = colors.rebateGold;
       ctx.font = `${fonts.weight.semibold} 13px ${fonts.family}`;
-      ctx.fillText(COPY.shareToChallenge, cx, h * 0.38);
+      ctx.fillText(COPY.shareToChallenge, cx, y);
     }
   }
 

@@ -11,9 +11,11 @@ export default defineConfig({
   },
   server: {
     host: true,
-    port: 5174,
-    strictPort: false,
+    // Honor the port assigned by the harness (PORT env, via launch.json autoPort);
+    // strictPort keeps Vite from silently drifting to another port and desyncing
+    // from the preview manager. Falls back to 5173 for a plain `npm run dev`.
+    port: Number(process.env.PORT) || 5173,
+    strictPort: true,
     allowedHosts: true,
-    
   },
 });
