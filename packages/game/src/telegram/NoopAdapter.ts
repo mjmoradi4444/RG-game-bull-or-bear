@@ -81,7 +81,33 @@ export class NoopAdapter implements TelegramAdapter {
 
   openLink(url: string): void {
     console.info('[NoopAdapter] openLink(', url, ')');
-    window.open(url, '_blank', 'noopener');
+    const tg = (window as unknown as { Telegram?: { WebApp?: { openTelegramLink?: (u: string) => void; openLink?: (u: string, opts?: { try_instant_view?: boolean }) => void } } }).Telegram?.WebApp;
+    if (tg) {
+      if ((url.includes('t.me/') || url.startsWith('tg://')) && typeof tg.openTelegramLink === 'function') {
+        tg.openTelegramLink(url);
+        return;
+      }
+      if (typeof tg.openLink === 'function') {
+        tg.openLink(url);
+        return;
+      }
+    }
+    let w: Window | null = null;
+    try {
+      w = window.open(url, '_blank', 'noopener,noreferrer');
+    } catch {
+      w = null;
+    }
+    if (!w) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => a.remove(), 100);
+    }
   }
 
   /** Local dev: read the challenge payload from `?startapp=` / `?duel=` on the URL. */

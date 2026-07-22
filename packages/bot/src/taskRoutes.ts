@@ -4,6 +4,7 @@ import {
   claimTask,
   recordReferral,
   shareTaskEvent,
+  submitTaskManual,
   tasksView,
   tgJoinChannel,
   visitTask,
@@ -18,6 +19,7 @@ import { bot } from './bot';
  *
  *   GET  /tasks?gctx=…                  → { daily, general, resetAt, claimable }
  *   POST /tasks/claim {gctx, taskId, day?}  → { reward, newSeasonRp | newTokens } | 409
+ *   POST /tasks/submit-manual {gctx, taskId} → { ok: true }
  *   POST /tasks/visit {gctx, taskId}    → starts the 30s click-claim timer
  *   POST /tasks/share {gctx}            → d_share progress
  *   POST /tasks/referral {gctx, ref}    → record who invited this player
@@ -40,11 +42,13 @@ async function readBody(req: IncomingMessage, cap = 4096): Promise<string> {
 }
 const ctxFrom = (raw: unknown): GameContext | null => verifyContext(String(raw ?? ''), READ_TTL_MS);
 
-/** Is the user a member of the given @channel? Uses the bot's getChatMember. */
+/** Is the user a member of the given channel? Uses the bot's getChatMember. */
 async function isChannelMember(channel: string, u: number): Promise<boolean> {
-  if (!bot) return false;
+  if (!bot || !channel) return false;
   try {
-    const chat = channel.startsWith('@') ? channel : `@${channel}`;
+    const handle = channel.trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '');
+    if (!handle) return false;
+    const chat = `@${handle}`;
     const m = await bot.api.getChatMember(chat, u);
     return m.status === 'member' || m.status === 'administrator' || m.status === 'creator';
   } catch {
@@ -82,9 +86,9 @@ export async function handleTasks(
     const taskId = String(data.taskId ?? '');
     // Telegram-join tasks verify membership live before claiming.
     let tgVerified: boolean | undefined;
-    if (taskId === 'tg_join') {
-      const channel = tgJoinChannel();
-      tgVerified = channel ? await isChannelMember(channel, ctx.u) : false;
+    const channel = tgJoinChannel(taskId);
+    if (channel) {
+      tgVerified = await isChannelMember(channel, ctx.u);
     }
     const result = claimTask(ctx.u, ctx.n ?? 'Player', taskId, data.day, tgVerified);
     if (!result.ok) {
@@ -93,6 +97,18 @@ export async function handleTasks(
       return true;
     }
     json(res, 200, result, allowOrigin);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/tasks/submit-manual') {
+    const data = JSON.parse((await readBody(req)) || '{}') as { gctx?: string; taskId?: string };
+    const ctx = ctxFrom(data.gctx);
+    if (!ctx) {
+      json(res, 401, { ok: false, error: 'bad_context' }, allowOrigin);
+      return true;
+    }
+    const result = submitTaskManual(ctx.u, ctx.n ?? 'Player', String(data.taskId ?? ''));
+    json(res, result.ok ? 200 : 400, result, allowOrigin);
     return true;
   }
 

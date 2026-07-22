@@ -133,6 +133,11 @@ export const COPY = {
   taskVerifyClick: 'Open the link — Claim unlocks 30s later',
   taskVerifyClickWait: 'Verifying your visit…',
   taskVerifyReferral: 'Pays automatically when a friend plays a match',
+  taskVerifyManual: 'Submit task for manual admin approval',
+  taskVerifyManualPending: 'Pending admin review',
+  tasksSubmit: 'Submit',
+  tasksPending: 'Pending ⏳',
+  tasksSubmittedToast: 'Submitted! Waiting for admin approval.',
 
   // Tutorial / FTUE (PRD-ONBOARDING-TASKS §5). Short, translation-ready, no idioms.
   howToPlay: 'How to play',

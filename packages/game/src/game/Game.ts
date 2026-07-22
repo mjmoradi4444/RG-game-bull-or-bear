@@ -44,6 +44,7 @@ import {
 import {
   fetchTasks,
   claimTask,
+  submitManualTask,
   visitTask,
   shareTask,
   sendReferral,
@@ -917,9 +918,14 @@ export class Game {
   }
 
   /** What the row's action button should be — mirrors the server's verify rules. */
-  private taskAction(row: TaskRow): 'claim' | 'go' | 'join' | 'wait' | 'claimed' | 'auto' {
+  private taskAction(row: TaskRow): 'claim' | 'go' | 'join' | 'wait' | 'claimed' | 'auto' | 'submit' | 'pending' {
     if (row.state === 'claimed') return 'claimed';
+    if (row.state === 'pending') return 'pending';
     if (row.state === 'completed') return 'claim';
+    if (row.verifyMethod === 'manual') {
+      if (row.url && !row.visited && !this.taskUnlocks.has(row.id)) return 'go';
+      return 'submit';
+    }
     if (row.verifyMethod === 'click_claim') {
       const unlock = this.taskUnlockAt(row);
       if (row.visited || unlock !== null) return unlock !== null && Date.now() < unlock ? 'wait' : 'claim';
@@ -928,7 +934,10 @@ export class Game {
     if (row.verifyMethod === 'tg_member') {
       return row.visited || this.taskUnlocks.has(row.id) ? 'claim' : 'join';
     }
-    return 'auto'; // server-tracked gameplay / flags / referral — no button until done
+    if (row.url && row.state === 'in_progress') {
+      return 'go';
+    }
+    return 'auto';
   }
 
   /** One line under the title that tells the player HOW this task is verified. */
@@ -940,6 +949,8 @@ export class Game {
         const unlock = this.taskUnlockAt(row);
         return unlock !== null && Date.now() < unlock ? COPY.taskVerifyClickWait : COPY.taskVerifyClick;
       }
+      case 'manual':
+        return row.state === 'pending' ? COPY.taskVerifyManualPending : COPY.taskVerifyManual;
       case 'referral':
         return COPY.taskVerifyReferral;
       default:
@@ -989,9 +1000,28 @@ export class Game {
         this.adapter.openLink(row.url);
       } else if (action === 'claim') {
         this.onClaimTask(row);
+      } else if (action === 'submit') {
+        this.onSubmitManualTask(row);
       }
       return;
     }
+  }
+
+  private onSubmitManualTask(row: TaskRow): void {
+    if (this.tasksClaiming) return;
+    this.tasksClaiming = true;
+    void submitManualTask(row.id).then((r) => {
+      this.tasksClaiming = false;
+      if (r.ok) {
+        this.audio.coin();
+        this.adapter.haptic('success');
+        this.tasksToast = { text: COPY.tasksSubmittedToast, until: this.pulse + 4 };
+        this.refreshTasks();
+      } else {
+        this.audio.loss();
+        this.tasksToast = { text: COPY.tasksNotYet, until: this.pulse + 3 };
+      }
+    });
   }
 
   private onClaimTask(row: TaskRow): void {
@@ -2982,6 +3012,13 @@ export class Game {
       ctx.textAlign = 'center';
       ctx.fillText(COPY.tasksClaimed, br.x + br.w / 2, br.y + br.h / 2);
       ctx.textBaseline = 'alphabetic';
+    } else if (action === 'pending') {
+      ctx.fillStyle = colors.rebateGold;
+      ctx.font = `${fonts.weight.semibold} 11px ${fonts.family}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.fillText(COPY.tasksPending, br.x + br.w / 2, br.y + br.h / 2);
+      ctx.textBaseline = 'alphabetic';
     } else if (action === 'wait') {
       // Click-claim countdown: a disabled-looking pill with live seconds left.
       const unlock = this.taskUnlockAt(row) ?? Date.now();
@@ -2998,12 +3035,12 @@ export class Game {
       ctx.textBaseline = 'middle';
       ctx.fillText(`⏳ ${COPY.tasksUnlockIn(secs)}`, br.x + br.w / 2, br.y + br.h / 2 + 0.5);
       ctx.textBaseline = 'alphabetic';
-    } else if (action === 'claim' || action === 'go' || action === 'join') {
+    } else if (action === 'claim' || action === 'go' || action === 'join' || action === 'submit') {
       drawButton(ctx, {
         id: action,
         ...br,
-        label: action === 'claim' ? COPY.tasksClaim : action === 'join' ? COPY.tasksJoin : COPY.tasksGo,
-        kind: action === 'claim' ? 'gold' : 'ghost',
+        label: action === 'claim' ? COPY.tasksClaim : action === 'join' ? COPY.tasksJoin : action === 'submit' ? COPY.tasksSubmit : COPY.tasksGo,
+        kind: action === 'claim' ? 'gold' : action === 'submit' ? 'primary' : 'ghost',
       });
     }
     ctx.textAlign = 'left';

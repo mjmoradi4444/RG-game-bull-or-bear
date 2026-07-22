@@ -19,6 +19,8 @@ import {
   adminPlayers,
   adminStandings,
   adminTasks,
+  approveTaskSubmission,
+  createTask,
   editTask,
   applyPrize,
   auditEntries,
@@ -27,8 +29,10 @@ import {
   csvWinners,
   evaluateFlags,
   openFlags,
+  pendingTaskSubmissions,
   prizeWorkflow,
   previousSeasonId,
+  rejectTaskSubmission,
   resolveFlag,
   rollDownPrize,
   setNote,
@@ -299,9 +303,28 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, ad
     return true;
   }
 
-  // GET /tasks · POST /tasks/:id (catalog CRUD — §7.8)
+  // GET /tasks · POST /tasks/create · POST /tasks/:id (catalog CRUD — §7.8)
   if (req.method === 'GET' && p === '/tasks') {
     json(res, 200, { ok: true, tasks: adminTasks() });
+    return true;
+  }
+  if (req.method === 'POST' && p === '/tasks/create') {
+    const b = await body();
+    const ok = createTask(admin, {
+      id: String(b.id || '').trim(),
+      kind: (b.kind as any) || 'social',
+      cadence: (b.cadence as any) || 'once',
+      title: String(b.title || '').slice(0, 120),
+      rewardType: (b.rewardType as any) || 'rp',
+      rewardAmount: Number(b.rewardAmount) || 50,
+      verifyMethod: (b.verifyMethod as any) || 'click_claim',
+      target: Number(b.target) || 1,
+      url: b.url ? String(b.url).slice(0, 300) : undefined,
+      channel: b.channel ? String(b.channel).slice(0, 100) : undefined,
+      active: b.active !== undefined ? !!b.active : true,
+      sort: Number(b.sort) || 50,
+    });
+    json(res, ok ? 200 : 400, { ok });
     return true;
   }
   const tm = /^\/tasks\/([a-z0-9_]+)$/.exec(p);
@@ -309,13 +332,30 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, ad
     const b = await body();
     const ok = editTask(admin, tm[1]!, {
       title: b.title !== undefined ? String(b.title) : undefined,
+      rewardType: b.rewardType !== undefined ? (b.rewardType as any) : undefined,
       rewardAmount: b.rewardAmount !== undefined ? Number(b.rewardAmount) : undefined,
+      verifyMethod: b.verifyMethod !== undefined ? (b.verifyMethod as any) : undefined,
       url: b.url !== undefined ? String(b.url) : undefined,
       channel: b.channel !== undefined ? String(b.channel) : undefined,
       active: b.active !== undefined ? !!b.active : undefined,
       sort: b.sort !== undefined ? Number(b.sort) : undefined,
     });
     json(res, ok ? 200 : 404, { ok });
+    return true;
+  }
+
+  // GET /tasks/submissions · POST /tasks/submissions/:u/:taskId/(approve|reject)
+  if (req.method === 'GET' && p === '/tasks/submissions') {
+    json(res, 200, { ok: true, submissions: pendingTaskSubmissions() });
+    return true;
+  }
+  const tsm = /^\/tasks\/submissions\/(\d+)\/([a-z0-9_]+)\/(approve|reject)$/.exec(p);
+  if (req.method === 'POST' && tsm) {
+    const u = Number(tsm[1]);
+    const taskId = tsm[2]!;
+    const action = tsm[3]!;
+    const resObj = action === 'approve' ? approveTaskSubmission(admin, u, taskId) : rejectTaskSubmission(admin, u, taskId);
+    json(res, resObj.ok ? 200 : 400, resObj);
     return true;
   }
 

@@ -21,6 +21,8 @@ import {
   REFERRAL_TOKEN_CAP,
   clampReward,
   type TaskDef,
+  type RewardType,
+  type VerifyMethod,
 } from './taskCatalog';
 
 /**
@@ -211,7 +213,7 @@ interface State {
 }
 
 interface TaskProgressRec {
-  state: 'in_progress' | 'completed' | 'claimed';
+  state: 'in_progress' | 'pending' | 'completed' | 'claimed';
   progress: number;
   completedAt?: number;
   claimedAt?: number;
@@ -891,12 +893,17 @@ export function visitTask(u: number, taskId: string): number | null {
 
 // ---- completion state resolution --------------------------------------------
 
-type TaskState = 'locked' | 'in_progress' | 'completed' | 'claimed';
+export type TaskState = 'locked' | 'in_progress' | 'pending' | 'completed' | 'claimed';
 
 function resolveState(u: number, def: TaskDef, day?: string): { state: TaskState; progress: number } {
   const rec = state.users[String(u)];
   const p = state.taskProgress[pkey(u, def.id, day)];
   if (p?.state === 'claimed') return { state: 'claimed', progress: p.progress };
+  if (p?.state === 'pending') return { state: 'pending', progress: p.progress };
+
+  if (def.verifyMethod === 'manual') {
+    return { state: (p?.state as TaskState) || 'in_progress', progress: p?.progress ?? 0 };
+  }
 
   // Server-flag tasks derive completion from user state.
   if (def.id === 'tutorial') {
@@ -996,7 +1003,7 @@ export function tasksView(u: number, name?: string): TasksView {
 
 export type ClaimResult =
   | { ok: true; rewardType: string; reward: number; seasonRp?: number; rank?: number; tokens?: number }
-  | { ok: false; error: 'already_claimed' | 'not_completed' | 'unknown_task' | 'tg_not_member' };
+  | { ok: false; error: 'already_claimed' | 'not_completed' | 'unknown_task' | 'tg_not_member' | 'pending_approval' };
 
 /** Claim a completed task. `tgVerified` is supplied by the route after a
  *  getChatMember check for tg_member tasks. Idempotent. */
@@ -1009,6 +1016,11 @@ export function claimTask(u: number, name: string, taskId: string, day: string |
 
   const p = getProg(u, taskId, dayArg);
   if (p.state === 'claimed') return { ok: false, error: 'already_claimed' };
+
+  if (def.verifyMethod === 'manual') {
+    if (p.state === 'pending') return { ok: false, error: 'pending_approval' };
+    return { ok: false, error: 'not_completed' };
+  }
 
   // Completion gates.
   if (def.verifyMethod === 'tg_member') {
@@ -1032,8 +1044,27 @@ export function claimTask(u: number, name: string, taskId: string, day: string |
   return { ok: true, rewardType: 'rp', reward: amount, seasonRp, rank };
 }
 
-/** The @channel to verify for the Telegram-join task (route calls getChatMember). */
-export function tgJoinChannel(): string | null {
+/** Submit a manual task for admin approval. */
+export function submitTaskManual(u: number, name: string, taskId: string): { ok: boolean; error?: string } {
+  ensureSeason();
+  userRec(u, name);
+  const def = taskDef(taskId);
+  if (!def || !def.active || def.verifyMethod !== 'manual') return { ok: false, error: 'invalid_task' };
+  const p = getProg(u, taskId, undefined);
+  if (p.state === 'claimed') return { ok: false, error: 'already_claimed' };
+  if (p.state === 'pending') return { ok: false, error: 'already_submitted' };
+
+  p.state = 'pending';
+  save();
+  return { ok: true };
+}
+
+/** The @channel to verify for Telegram-join tasks (route calls getChatMember). */
+export function tgJoinChannel(taskId?: string): string | null {
+  if (taskId) {
+    const def = taskDef(taskId);
+    return def?.active && def.channel ? def.channel : null;
+  }
   const def = taskDef('tg_join');
   return def?.active && def.channel ? def.channel : null;
 }
@@ -1059,7 +1090,9 @@ export function adminTasks(): Array<TaskDef & { completed: number; claimed: numb
 
 export interface TaskEdit {
   title?: string;
+  rewardType?: RewardType;
   rewardAmount?: number;
+  verifyMethod?: VerifyMethod;
   url?: string;
   channel?: string;
   active?: boolean;
@@ -1071,6 +1104,12 @@ export function editTask(actor: string, id: string, patch: TaskEdit): boolean {
   if (!def) return false;
   const before = { ...def };
   if (patch.title !== undefined) def.title = String(patch.title).slice(0, 120);
+  if (patch.rewardType !== undefined && (patch.rewardType === 'rp' || patch.rewardType === 'token')) {
+    def.rewardType = patch.rewardType;
+  }
+  if (patch.verifyMethod !== undefined && ['server', 'tg_member', 'click_claim', 'referral', 'manual'].includes(patch.verifyMethod)) {
+    def.verifyMethod = patch.verifyMethod;
+  }
   if (patch.rewardAmount !== undefined) def.rewardAmount = clampReward(def.rewardType, patch.rewardAmount);
   if (patch.url !== undefined) def.url = String(patch.url).slice(0, 300);
   if (patch.channel !== undefined) def.channel = String(patch.channel).slice(0, 100);
@@ -1079,6 +1118,80 @@ export function editTask(actor: string, id: string, patch: TaskEdit): boolean {
   audit(actor, 'task_edit', 'task', id, before, { ...def });
   save();
   return true;
+}
+
+export function createTask(actor: string, task: TaskDef): boolean {
+  ensureSeason();
+  if (!task.id || state.taskCatalog.some((t) => t.id === task.id)) return false;
+  task.rewardAmount = clampReward(task.rewardType, task.rewardAmount);
+  state.taskCatalog.push(task);
+  audit(actor, 'task_create', 'task', task.id, undefined, task);
+  save();
+  return true;
+}
+
+export interface PendingTaskSub {
+  u: number;
+  name: string;
+  taskId: string;
+  taskTitle: string;
+  rewardType: RewardType;
+  rewardAmount: number;
+}
+
+export function pendingTaskSubmissions(): PendingTaskSub[] {
+  ensureSeason();
+  const list: PendingTaskSub[] = [];
+  for (const [key, prog] of Object.entries(state.taskProgress)) {
+    if (prog.state !== 'pending') continue;
+    const parts = key.split(':');
+    const u = Number(parts[0]);
+    const taskId = parts[1];
+    if (!u || !taskId) continue;
+    const def = taskDef(taskId);
+    if (!def) continue;
+    list.push({
+      u,
+      name: userName(u),
+      taskId,
+      taskTitle: def.title,
+      rewardType: def.rewardType,
+      rewardAmount: def.rewardAmount,
+    });
+  }
+  return list;
+}
+
+export function approveTaskSubmission(actor: string, u: number, taskId: string): { ok: boolean; error?: string } {
+  ensureSeason();
+  const def = taskDef(taskId);
+  if (!def) return { ok: false, error: 'unknown_task' };
+  const p = getProg(u, taskId, undefined);
+  if (p.state !== 'pending') return { ok: false, error: 'not_pending' };
+
+  p.state = 'claimed';
+  p.claimedAt = Date.now();
+  p.progress = Math.max(p.progress, def.target);
+
+  const amount = clampReward(def.rewardType, def.rewardAmount);
+  if (def.rewardType === 'token') {
+    grantBonusToken(u, amount);
+  } else {
+    grantTaskRp(u, userName(u), amount);
+  }
+  audit(actor, 'task_manual_approve', 'task', taskId, undefined, { u, amount, rewardType: def.rewardType });
+  save();
+  return { ok: true };
+}
+
+export function rejectTaskSubmission(actor: string, u: number, taskId: string): { ok: boolean; error?: string } {
+  ensureSeason();
+  const p = getProg(u, taskId, undefined);
+  if (p.state !== 'pending') return { ok: false, error: 'not_pending' };
+  p.state = 'in_progress';
+  audit(actor, 'task_manual_reject', 'task', taskId, undefined, { u });
+  save();
+  return { ok: true };
 }
 
 export { DAILY_POOL_IDS };

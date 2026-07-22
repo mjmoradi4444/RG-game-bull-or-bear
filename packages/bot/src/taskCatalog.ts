@@ -11,8 +11,8 @@ export type TaskKind = 'social' | 'gameplay' | 'account' | 'referral' | 'milesto
 export type TaskCadence = 'once' | 'daily';
 export type RewardType = 'rp' | 'token';
 /** How completion is proven. server = auto from a server flag / match log;
- *  tg_member = getChatMember; click_claim = open link then 30s unlock; referral. */
-export type VerifyMethod = 'server' | 'tg_member' | 'click_claim' | 'referral';
+ *  tg_member = getChatMember; click_claim = open link then 30s unlock; referral; manual = admin approval. */
+export type VerifyMethod = 'server' | 'tg_member' | 'click_claim' | 'referral' | 'manual';
 
 export interface TaskDef {
   id: string;

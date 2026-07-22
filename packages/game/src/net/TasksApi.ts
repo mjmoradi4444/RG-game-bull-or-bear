@@ -6,7 +6,7 @@ import { apiBase, launchGctx } from './Multiplayer';
  * server-side; this only reads tasks, opens social links (visit), signals shares,
  * captures referral attribution, and claims.
  */
-export type TaskState = 'locked' | 'in_progress' | 'completed' | 'claimed';
+export type TaskState = 'locked' | 'in_progress' | 'pending' | 'completed' | 'claimed';
 
 export interface TaskRow {
   id: string;
@@ -14,7 +14,7 @@ export interface TaskRow {
   title: string;
   rewardType: 'rp' | 'token';
   rewardAmount: number;
-  verifyMethod: 'server' | 'tg_member' | 'click_claim' | 'referral';
+  verifyMethod: 'server' | 'tg_member' | 'click_claim' | 'referral' | 'manual';
   url?: string;
   target: number;
   state: TaskState;
@@ -92,4 +92,15 @@ export function sendReferral(ref: string): void {
   const g = gctx();
   if (!g) return;
   void post('/tasks/referral', { gctx: g, ref }).catch(() => {});
+}
+
+/** Submit a manual task for admin approval. */
+export async function submitManualTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
+  const g = gctx();
+  if (!g) return { ok: false, error: 'network' };
+  try {
+    return await post<{ ok: boolean; error?: string }>('/tasks/submit-manual', { gctx: g, taskId });
+  } catch {
+    return { ok: false, error: 'network' };
+  }
 }

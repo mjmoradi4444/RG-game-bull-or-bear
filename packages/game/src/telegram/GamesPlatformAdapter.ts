@@ -92,19 +92,38 @@ function proxy(): GameProxy | undefined {
 }
 
 /**
- * Open a URL from inside Telegram's game webview, which commonly BLOCKS
- * window.open (popups) — the exact reason Share/CTA taps can look dead in
- * production while working in a normal browser. If the popup is blocked,
- * navigate the webview itself; t.me links are intercepted natively by Telegram.
+ * Open a URL from inside Telegram's game webview or Mini App safely without closing the app.
  */
 function openExternal(url: string): void {
+  const tg = (window as unknown as { Telegram?: { WebApp?: { openTelegramLink?: (u: string) => void; openLink?: (u: string, opts?: { try_instant_view?: boolean }) => void } } }).Telegram?.WebApp;
+  
+  if (tg) {
+    if ((url.includes('t.me/') || url.startsWith('tg://')) && typeof tg.openTelegramLink === 'function') {
+      tg.openTelegramLink(url);
+      return;
+    }
+    if (typeof tg.openLink === 'function') {
+      tg.openLink(url);
+      return;
+    }
+  }
+
   let w: Window | null = null;
   try {
-    w = window.open(url, '_blank', 'noopener');
+    w = window.open(url, '_blank', 'noopener,noreferrer');
   } catch {
     w = null;
   }
-  if (!w) window.location.href = url;
+  if (!w) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 100);
+  }
 }
 
 function hashParam(key: string): string | null {
