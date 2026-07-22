@@ -917,8 +917,10 @@ export class Game {
     return row.unlocksAt ?? this.taskUnlocks.get(row.id) ?? null;
   }
 
-  /** What the row's action button should be — mirrors the server's verify rules. */
-  private taskAction(row: TaskRow): 'claim' | 'go' | 'join' | 'wait' | 'claimed' | 'auto' | 'submit' | 'pending' {
+  /** What the row's action button should be — mirrors the server's verify rules.
+   *  Every in-progress task ends up with a button: a claim/go/join/submit for the
+   *  verify flow, or a `goto` that takes the player to WHERE they do the task. */
+  private taskAction(row: TaskRow): 'claim' | 'go' | 'join' | 'wait' | 'claimed' | 'goto' | 'submit' | 'pending' {
     if (row.state === 'claimed') return 'claimed';
     if (row.state === 'pending') return 'pending';
     if (row.state === 'completed') return 'claim';
@@ -937,7 +939,20 @@ export class Game {
     if (row.url && row.state === 'in_progress') {
       return 'go';
     }
-    return 'auto';
+    // Auto-tracked tasks (gameplay/account/tutorial/referral): a button that takes
+    // the player to where they complete it — never a dead row.
+    return 'goto';
+  }
+
+  /** For auto-tracked tasks, the button label + the navigation it performs. */
+  private taskGoto(row: TaskRow): { label: string; run: () => void } | null {
+    if (row.id === 'email_link') return { label: COPY.tasksLinkBtn, run: () => this.enterEmail('tasks') };
+    if (row.id === 'tutorial') return { label: COPY.tutStart, run: () => this.startTutorial() };
+    if (row.id === 'referral') {
+      return { label: COPY.tasksInvite, run: () => { this.screen = 'title'; this.adapter.share(); } };
+    }
+    // Everything else (gameplay dailies, first-duel milestones, share) → go play.
+    return { label: COPY.tasksPlay, run: () => { this.screen = 'title'; } };
   }
 
   /** One line under the title that tells the player HOW this task is verified. */
@@ -1002,6 +1017,12 @@ export class Game {
         this.onClaimTask(row);
       } else if (action === 'submit') {
         this.onSubmitManualTask(row);
+      } else if (action === 'goto') {
+        const g = this.taskGoto(row);
+        if (g) {
+          this.audio.coin();
+          g.run();
+        }
       }
       return;
     }
@@ -1044,12 +1065,10 @@ export class Game {
         this.refreshProfile();
       } else {
         this.audio.loss();
-        if (row.verifyMethod === 'tg_member' && row.url) {
-          this.tasksToast = { text: COPY.tasksJoinFirst, until: this.pulse + 3 };
-          this.adapter.openLink(row.url);
-        } else {
-          this.tasksToast = { text: COPY.tasksNotYet, until: this.pulse + 3 };
-        }
+        // Membership couldn't be confirmed (they may have joined, but the bot must
+        // be able to see the channel). Explain rather than bounce them out again.
+        const msg = r.error === 'tg_not_member' ? COPY.tasksVerifyFailed : COPY.tasksNotYet;
+        this.tasksToast = { text: msg, until: this.pulse + 4 };
       }
     });
   }
@@ -3035,12 +3054,22 @@ export class Game {
       ctx.textBaseline = 'middle';
       ctx.fillText(`⏳ ${COPY.tasksUnlockIn(secs)}`, br.x + br.w / 2, br.y + br.h / 2 + 0.5);
       ctx.textBaseline = 'alphabetic';
-    } else if (action === 'claim' || action === 'go' || action === 'join' || action === 'submit') {
+    } else if (action === 'claim' || action === 'go' || action === 'join' || action === 'submit' || action === 'goto') {
+      const label =
+        action === 'claim'
+          ? COPY.tasksClaim
+          : action === 'join'
+            ? COPY.tasksJoin
+            : action === 'submit'
+              ? COPY.tasksSubmit
+              : action === 'goto'
+                ? (this.taskGoto(row)?.label ?? COPY.tasksGo)
+                : COPY.tasksGo;
       drawButton(ctx, {
         id: action,
         ...br,
-        label: action === 'claim' ? COPY.tasksClaim : action === 'join' ? COPY.tasksJoin : action === 'submit' ? COPY.tasksSubmit : COPY.tasksGo,
-        kind: action === 'claim' ? 'gold' : action === 'submit' ? 'primary' : 'ghost',
+        label,
+        kind: action === 'claim' ? 'gold' : action === 'submit' || action === 'goto' ? 'primary' : 'ghost',
       });
     }
     ctx.textAlign = 'left';

@@ -138,6 +138,11 @@ export const COPY = {
   tasksSubmit: 'Submit',
   tasksPending: 'Pending ⏳',
   tasksSubmittedToast: 'Submitted! Waiting for admin approval.',
+  // Action buttons that take the player to WHERE they do the task (so every row has one).
+  tasksPlay: 'Play',
+  tasksLinkBtn: 'Link',
+  tasksInvite: 'Invite',
+  tasksVerifyFailed: 'Couldn’t verify yet — make sure you joined, then try again.',
 
   // Tutorial / FTUE (PRD-ONBOARDING-TASKS §5). Short, translation-ready, no idioms.
   howToPlay: 'How to play',
