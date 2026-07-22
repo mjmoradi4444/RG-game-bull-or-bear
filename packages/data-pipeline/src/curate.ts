@@ -1,5 +1,5 @@
 import type { Candle, RawClip, StoredPuzzle } from './types';
-import { PARAMS } from './config';
+import { PARAMS, PER_GROUP_CAP, classOf } from './config';
 import { mulberry32, round, shuffle, slug } from './util';
 
 export interface CurateStats {
@@ -28,10 +28,25 @@ export function curate(
 
   const notDegenerate = allClips.filter((c) => c.atr > 0 && c.absMove >= PARAMS.ATR_K * c.atr);
   const filtered = notDegenerate.filter((c) => c.er >= PARAMS.ER_MIN_TREND);
-  // Set the difficulty terciles from this run's trending set (balanced level sizes).
-  const ers = filtered.map((c) => c.er).sort((a, b) => a - b);
-  erMedQ = ers[Math.floor(ers.length / 3)] ?? PARAMS.ER_MED;
-  erEasyQ = ers[Math.floor((2 * ers.length) / 3)] ?? PARAMS.ER_EASY;
+  // Difficulty terciles PER ASSET so every asset splits ~evenly into easy/med/hard.
+  // Global terciles would lump an asset into one tier whenever its ER band differs
+  // from the pool's (forex 1h/15m trends cleaner than crypto 5m), leaving forex
+  // unbalanced across tiers — §6.2 needs FOREX spread evenly across all three, so we
+  // grade each asset against its OWN efficiency-ratio distribution.
+  erThresholds.clear();
+  const ersByAsset = new Map<string, number[]>();
+  for (const c of filtered) {
+    const arr = ersByAsset.get(c.asset);
+    if (arr) arr.push(c.er);
+    else ersByAsset.set(c.asset, [c.er]);
+  }
+  for (const [asset, ers] of ersByAsset) {
+    ers.sort((a, b) => a - b);
+    erThresholds.set(asset, {
+      med: ers[Math.floor(ers.length / 3)] ?? PARAMS.ER_MED,
+      easy: ers[Math.floor((2 * ers.length) / 3)] ?? PARAMS.ER_EASY,
+    });
+  }
 
   // Group by asset × difficulty so we can balance 50/50 WITHIN each level — that way
   // every difficulty is directionally unbiased per asset (no "always follow the
@@ -54,7 +69,10 @@ export function curate(
       clips.filter((c) => c.outcome === 'down'),
       rnd,
     );
-    const perSide = Math.min(ups.length, downs.length, Math.floor(PARAMS.PER_GROUP_CAP / 2));
+    // Cap per (asset × difficulty) by the asset's CLASS, so the finished pool lands
+    // on the §6.2 mix (forex-heavy) rather than the raw fetch's crypto-heavy balance.
+    const cap = PER_GROUP_CAP[classOf(clips[0]!.asset)];
+    const perSide = Math.min(ups.length, downs.length, Math.floor(cap / 2));
     for (let i = 0; i < perSide; i++) {
       kept.push(ups[i]!, downs[i]!);
     }
@@ -74,15 +92,19 @@ export function curate(
   };
 }
 
-// ER tercile thresholds, set from the actual trending set in curate() so the three
-// difficulty levels come out ~balanced in size regardless of the raw ER distribution.
-let erMedQ: number = PARAMS.ER_MED;
-let erEasyQ: number = PARAMS.ER_EASY;
+// Per-asset ER tercile thresholds, populated in curate() from each asset's own
+// trending clips so every asset (especially FOREX) spreads ~evenly across the three
+// tiers regardless of how its efficiency-ratio band compares to other assets'.
+const erThresholds = new Map<string, { med: number; easy: number }>();
 
-/** Grade by trend clarity (quantile terciles): clearest trend = easy, faintest = hard. */
+/** Grade by trend clarity (per-asset quantile terciles): clearest trend = easy,
+ *  faintest = hard. Falls back to the fixed PARAMS thresholds for an ungraded asset. */
 function difficulty(c: RawClip): 'easy' | 'med' | 'hard' {
-  if (c.er >= erEasyQ) return 'easy';
-  if (c.er >= erMedQ) return 'med';
+  const t = erThresholds.get(c.asset);
+  const easyQ = t?.easy ?? PARAMS.ER_EASY;
+  const medQ = t?.med ?? PARAMS.ER_MED;
+  if (c.er >= easyQ) return 'easy';
+  if (c.er >= medQ) return 'med';
   return 'hard';
 }
 
