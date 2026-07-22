@@ -80,6 +80,7 @@ export function assetClass(asset: string): AssetClass {
 /** Brand non-negotiables: every match should contain one of these where possible. */
 export const BRAND_ASSETS = ['XAU/USD', 'EUR/USD'] as const;
 
-/** Dropped at runtime until the dataset rebuild removes them (SOL isn't even in the
- *  declared ASSETS list — doc/config drift called out in the PRD §2.1). */
-export const DROPPED_ASSETS = new Set<string>(['SOL']);
+/** Assets filtered out of the pool at runtime. SOL is now physically absent from
+ *  puzzles.json (dropped per PRD §2.1 / §6.2), so this is empty — kept as the guard
+ *  point for any future asset we need to drop without a full data rebuild. */
+export const DROPPED_ASSETS = new Set<string>([]);
